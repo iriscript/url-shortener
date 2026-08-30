@@ -89,13 +89,16 @@ func redirectHandler(store *urlStore) http.HandlerFunc {
 	}
 }
 
-func main() {
-	store := newURLStore()
-
+func newRouter(store *urlStore) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /{$}", shortenHandler(store))
 	mux.HandleFunc("GET /{id}", redirectHandler(store))
+	return mux
+}
+
+func main() {
+	store := newURLStore()
 
 	log.Printf("starting server at %s", serverAddr)
-	log.Fatal(http.ListenAndServe(serverAddr, mux))
+	log.Fatal(http.ListenAndServe(serverAddr, newRouter(store)))
 }
