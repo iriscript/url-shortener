@@ -3,19 +3,20 @@ package main
 import (
 	"log"
 
+	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
 	"github.com/iriscript/url-shortener/internal/server"
 )
 
-const serverAddr = "localhost:8080"
-
 func main() {
-	repo := repository.NewMemoryRepository()
-	h := handler.NewURLHandler(repo, "http://"+serverAddr)
-	router := server.NewRouter(h)
-	srv := server.New(serverAddr, router)
+	cfg := config.New()
 
-	log.Printf("starting server at %s", serverAddr)
+	repo := repository.NewMemoryRepository()
+	h := handler.NewURLHandler(repo, cfg.BaseURL)
+	router := server.NewRouter(h)
+	srv := server.New(cfg.ServerAddress, router)
+
+	log.Printf("starting server at %s", cfg.ServerAddress)
 	log.Fatal(srv.Start())
 }
