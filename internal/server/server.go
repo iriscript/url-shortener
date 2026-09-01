@@ -3,14 +3,18 @@ package server
 import (
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/iriscript/url-shortener/internal/handler"
 )
 
 func NewRouter(h *handler.URLHandler) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /{$}", h.Shorten)
-	mux.HandleFunc("GET /{id}", h.Redirect)
-	return mux
+	gin.SetMode(gin.ReleaseMode)
+
+	router := gin.Default()
+	router.POST("/", h.Shorten)
+	router.GET("/:id", h.Redirect)
+	return router
 }
 
 type Server struct {

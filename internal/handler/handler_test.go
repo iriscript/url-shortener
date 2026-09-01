@@ -1,12 +1,12 @@
 package handler_test
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"strings"
 	"testing"
+
+	"github.com/go-resty/resty/v2"
 
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
@@ -32,11 +32,18 @@ func (m *mockRepository) Get(id string) (string, bool) {
 	return m.getFunc(id)
 }
 
-func closeBody(t *testing.T, body io.ReadCloser) {
+func newTestServer(t *testing.T, repo repository.URLRepository) *resty.Client {
 	t.Helper()
-	if err := body.Close(); err != nil {
-		t.Errorf("failed to close response body: %v", err)
-	}
+
+	router := server.NewRouter(handler.NewURLHandler(repo, baseURL))
+	ts := httptest.NewServer(router)
+	t.Cleanup(ts.Close)
+
+	return resty.New().
+		SetBaseURL(ts.URL).
+		SetRedirectPolicy(resty.RedirectPolicyFunc(func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}))
 }
 
 func TestURLHandler_Shorten(t *testing.T) {
@@ -59,28 +66,29 @@ func TestURLHandler_Shorten(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := server.NewRouter(handler.NewURLHandler(repository.NewMemoryRepository(), baseURL))
+			client := newTestServer(t, repository.NewMemoryRepository())
 
-			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
-			rec := httptest.NewRecorder()
+			resp, err := client.R().
+				SetHeader("Content-Type", "text/plain").
+				SetBody(tt.body).
+				Post("/")
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
 
-			router.ServeHTTP(rec, req)
-			res := rec.Result()
-			defer closeBody(t, res.Body)
-
-			if res.StatusCode != tt.wantStatus {
-				t.Fatalf("status = %d, want %d", res.StatusCode, tt.wantStatus)
+			if resp.StatusCode() != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode(), tt.wantStatus)
 			}
 
 			if tt.wantStatus != http.StatusCreated {
 				return
 			}
 
-			if ct := res.Header.Get("Content-Type"); ct != "text/plain" {
+			if ct := resp.Header().Get("Content-Type"); ct != "text/plain" {
 				t.Errorf("Content-Type = %q, want %q", ct, "text/plain")
 			}
 
-			body := rec.Body.String()
+			body := resp.String()
 			if !shortURLPattern.MatchString(body) {
 				t.Errorf("body = %q, want match of %q", body, shortURLPattern.String())
 			}
@@ -100,14 +108,18 @@ func TestURLHandler_Shorten_UsesRepository(t *testing.T) {
 		},
 	}
 
-	router := server.NewRouter(handler.NewURLHandler(mock, baseURL))
+	client := newTestServer(t, mock)
 
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(originalURL))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	resp, err := client.R().
+		SetHeader("Content-Type", "text/plain").
+		SetBody(originalURL).
+		Post("/")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
 
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	if resp.StatusCode() != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusCreated)
 	}
 
 	if gotSavedURL != originalURL {
@@ -115,7 +127,7 @@ func TestURLHandler_Shorten_UsesRepository(t *testing.T) {
 	}
 
 	wantBody := baseURL + "/" + fixedID
-	if got := rec.Body.String(); got != wantBody {
+	if got := resp.String(); got != wantBody {
 		t.Errorf("body = %q, want %q", got, wantBody)
 	}
 }
@@ -125,7 +137,7 @@ func TestURLHandler_Redirect(t *testing.T) {
 
 	repo := repository.NewMemoryRepository()
 	knownID := repo.Save(originalURL)
-	router := server.NewRouter(handler.NewURLHandler(repo, baseURL))
+	client := newTestServer(t, repo)
 
 	tests := []struct {
 		name         string
@@ -148,18 +160,16 @@ func TestURLHandler_Redirect(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/"+tt.id, nil)
-			rec := httptest.NewRecorder()
-
-			router.ServeHTTP(rec, req)
-			res := rec.Result()
-			defer closeBody(t, res.Body)
-
-			if res.StatusCode != tt.wantStatus {
-				t.Fatalf("status = %d, want %d", res.StatusCode, tt.wantStatus)
+			resp, err := client.R().Get("/" + tt.id)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
 			}
 
-			if loc := res.Header.Get("Location"); loc != tt.wantLocation {
+			if resp.StatusCode() != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode(), tt.wantStatus)
+			}
+
+			if loc := resp.Header().Get("Location"); loc != tt.wantLocation {
 				t.Errorf("Location = %q, want %q", loc, tt.wantLocation)
 			}
 		})
@@ -173,42 +183,48 @@ func TestURLHandler_Redirect_UnknownIDNeverHitsRepository(t *testing.T) {
 		},
 	}
 
-	router := server.NewRouter(handler.NewURLHandler(mock, baseURL))
+	client := newTestServer(t, mock)
 
-	req := httptest.NewRequest(http.MethodGet, "/anyID123", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	resp, err := client.R().Get("/anyID123")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	if resp.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusBadRequest)
 	}
 }
 
 func TestURLHandler_ShortenAndRedirect_RoundTrip(t *testing.T) {
 	const originalURL = "https://practicum.yandex.ru/"
 
-	router := server.NewRouter(handler.NewURLHandler(repository.NewMemoryRepository(), baseURL))
+	client := newTestServer(t, repository.NewMemoryRepository())
 
-	postReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(originalURL))
-	postRec := httptest.NewRecorder()
-	router.ServeHTTP(postRec, postReq)
-
-	if postRec.Code != http.StatusCreated {
-		t.Fatalf("POST status = %d, want %d", postRec.Code, http.StatusCreated)
+	postResp, err := client.R().
+		SetHeader("Content-Type", "text/plain").
+		SetBody(originalURL).
+		Post("/")
+	if err != nil {
+		t.Fatalf("POST request failed: %v", err)
 	}
 
-	shortURL := postRec.Body.String()
-	id := strings.TrimPrefix(shortURL, baseURL+"/")
-
-	getReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
-	getRec := httptest.NewRecorder()
-	router.ServeHTTP(getRec, getReq)
-
-	if getRec.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("GET status = %d, want %d", getRec.Code, http.StatusTemporaryRedirect)
+	if postResp.StatusCode() != http.StatusCreated {
+		t.Fatalf("POST status = %d, want %d", postResp.StatusCode(), http.StatusCreated)
 	}
 
-	if loc := getRec.Header().Get("Location"); loc != originalURL {
+	shortURL := postResp.String()
+	id := shortURL[len(baseURL+"/"):]
+
+	getResp, err := client.R().Get("/" + id)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+
+	if getResp.StatusCode() != http.StatusTemporaryRedirect {
+		t.Fatalf("GET status = %d, want %d", getResp.StatusCode(), http.StatusTemporaryRedirect)
+	}
+
+	if loc := getResp.Header().Get("Location"); loc != originalURL {
 		t.Errorf("Location = %q, want %q", loc, originalURL)
 	}
 }

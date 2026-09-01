@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"io"
-	"log"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/iriscript/url-shortener/internal/repository"
 )
@@ -17,31 +17,27 @@ func NewURLHandler(repo repository.URLRepository, baseURL string) *URLHandler {
 	return &URLHandler{repo: repo, baseURL: baseURL}
 }
 
-func (h *URLHandler) Shorten(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+func (h *URLHandler) Shorten(c *gin.Context) {
+	body, err := c.GetRawData()
 	if err != nil || len(body) == 0 {
-		http.Error(w, "empty or invalid request body", http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "empty or invalid request body")
 		return
 	}
 
 	id := h.repo.Save(string(body))
 
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
-	if _, err := w.Write([]byte(h.baseURL + "/" + id)); err != nil {
-		log.Printf("error while writing response: %v", err)
-	}
+	c.Data(http.StatusCreated, "text/plain", []byte(h.baseURL+"/"+id))
 }
 
-func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+func (h *URLHandler) Redirect(c *gin.Context) {
+	id := c.Param("id")
 
 	originalURL, ok := h.repo.Get(id)
 	if !ok {
-		http.Error(w, "unknown short URL id", http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "unknown short URL id")
 		return
 	}
 
-	w.Header().Set("Location", originalURL)
-	w.WriteHeader(http.StatusTemporaryRedirect)
+	c.Header("Location", originalURL)
+	c.Status(http.StatusTemporaryRedirect)
 }
