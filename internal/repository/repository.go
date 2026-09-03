@@ -7,17 +7,10 @@ import (
 
 var ErrIDConflict = errors.New("id already exists")
 
-type URLRepository interface {
-	Save(id, originalURL string) error
-	Get(id string) (originalURL string, ok bool)
-}
-
 type MemoryRepository struct {
 	mu sync.Mutex
 	m  map[string]string
 }
-
-var _ URLRepository = (*MemoryRepository)(nil)
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{m: make(map[string]string)}

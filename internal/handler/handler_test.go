@@ -23,7 +23,7 @@ type mockRepository struct {
 	getFunc  func(id string) (string, bool)
 }
 
-var _ repository.URLRepository = (*mockRepository)(nil)
+var _ handler.URLRepository = (*mockRepository)(nil)
 
 func (m *mockRepository) Save(id, originalURL string) error {
 	return m.saveFunc(id, originalURL)
@@ -33,7 +33,7 @@ func (m *mockRepository) Get(id string) (string, bool) {
 	return m.getFunc(id)
 }
 
-func newTestServer(t *testing.T, repo repository.URLRepository) *resty.Client {
+func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
 	t.Helper()
 
 	router := server.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))

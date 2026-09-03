@@ -20,12 +20,17 @@ const (
 	maxSaveAttempts = 100
 )
 
+type URLRepository interface {
+	Save(id, originalURL string) error
+	Get(id string) (originalURL string, ok bool)
+}
+
 type URLHandler struct {
-	repo    repository.URLRepository
+	repo    URLRepository
 	baseURL string
 }
 
-func NewURLHandler(repo repository.URLRepository, cfg config.HandlerConfig) *URLHandler {
+func NewURLHandler(repo URLRepository, cfg config.HandlerConfig) *URLHandler {
 	return &URLHandler{repo: repo, baseURL: cfg.BaseURL}
 }
 
