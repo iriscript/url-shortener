@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 
+	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
 	"github.com/iriscript/url-shortener/internal/server"
@@ -18,14 +19,14 @@ const baseURL = "http://localhost:8080"
 var shortURLPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(baseURL) + `/[a-zA-Z0-9]{8}$`)
 
 type mockRepository struct {
-	saveFunc func(originalURL string) string
+	saveFunc func(id, originalURL string) error
 	getFunc  func(id string) (string, bool)
 }
 
 var _ repository.URLRepository = (*mockRepository)(nil)
 
-func (m *mockRepository) Save(originalURL string) string {
-	return m.saveFunc(originalURL)
+func (m *mockRepository) Save(id, originalURL string) error {
+	return m.saveFunc(id, originalURL)
 }
 
 func (m *mockRepository) Get(id string) (string, bool) {
@@ -35,7 +36,7 @@ func (m *mockRepository) Get(id string) (string, bool) {
 func newTestServer(t *testing.T, repo repository.URLRepository) *resty.Client {
 	t.Helper()
 
-	router := server.NewRouter(handler.NewURLHandler(repo, baseURL))
+	router := server.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 
@@ -98,13 +99,13 @@ func TestURLHandler_Shorten(t *testing.T) {
 
 func TestURLHandler_Shorten_UsesRepository(t *testing.T) {
 	const originalURL = "https://practicum.yandex.ru/"
-	const fixedID = "fixedID1"
 
-	var gotSavedURL string
+	var gotSavedID, gotSavedURL string
 	mock := &mockRepository{
-		saveFunc: func(url string) string {
+		saveFunc: func(id, url string) error {
+			gotSavedID = id
 			gotSavedURL = url
-			return fixedID
+			return nil
 		},
 	}
 
@@ -126,18 +127,39 @@ func TestURLHandler_Shorten_UsesRepository(t *testing.T) {
 		t.Errorf("repo.Save called with %q, want %q", gotSavedURL, originalURL)
 	}
 
-	wantBody := baseURL + "/" + fixedID
+	wantBody := baseURL + "/" + gotSavedID
 	if got := resp.String(); got != wantBody {
 		t.Errorf("body = %q, want %q", got, wantBody)
 	}
 }
 
-func TestURLHandler_Redirect(t *testing.T) {
+func TestURLHandler_Shorten_ReturnsInternalErrorWhenIDsExhausted(t *testing.T) {
 	const originalURL = "https://practicum.yandex.ru/"
 
-	repo := repository.NewMemoryRepository()
-	knownID := repo.Save(originalURL)
-	client := newTestServer(t, repo)
+	mock := &mockRepository{
+		saveFunc: func(id, url string) error {
+			return repository.ErrIDConflict
+		},
+	}
+
+	client := newTestServer(t, mock)
+
+	resp, err := client.R().
+		SetHeader("Content-Type", "text/plain").
+		SetBody(originalURL).
+		Post("/")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if resp.StatusCode() != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusInternalServerError)
+	}
+}
+
+func TestURLHandler_Redirect(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+	const knownID = "knownID1"
 
 	tests := []struct {
 		name         string
@@ -160,6 +182,12 @@ func TestURLHandler_Redirect(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			repo := repository.NewMemoryRepository()
+			if err := repo.Save(knownID, originalURL); err != nil {
+				t.Fatalf("repo.Save failed: %v", err)
+			}
+			client := newTestServer(t, repo)
+
 			resp, err := client.R().Get("/" + tt.id)
 			if err != nil {
 				t.Fatalf("request failed: %v", err)

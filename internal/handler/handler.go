@@ -1,11 +1,23 @@
 package handler
 
 import (
+	"errors"
+	"log"
+	"math/rand"
 	"net/http"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/repository"
+)
+
+const (
+	idAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	idLength   = 8
+
+	maxSaveAttempts = 100
 )
 
 type URLHandler struct {
@@ -13,8 +25,8 @@ type URLHandler struct {
 	baseURL string
 }
 
-func NewURLHandler(repo repository.URLRepository, baseURL string) *URLHandler {
-	return &URLHandler{repo: repo, baseURL: baseURL}
+func NewURLHandler(repo repository.URLRepository, cfg config.HandlerConfig) *URLHandler {
+	return &URLHandler{repo: repo, baseURL: cfg.BaseURL}
 }
 
 func (h *URLHandler) Shorten(c *gin.Context) {
@@ -24,9 +36,37 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 		return
 	}
 
-	id := h.repo.Save(string(body))
+	id, err := h.save(string(body))
+	if err != nil {
+		log.Printf("shorten: failed to save url: %v", err)
+		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		return
+	}
 
-	c.Data(http.StatusCreated, "text/plain", []byte(h.baseURL+"/"+id))
+	shortURL, err := url.JoinPath(h.baseURL, id)
+	if err != nil {
+		log.Printf("shorten: failed to build short url: %v", err)
+		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		return
+	}
+
+	c.Data(http.StatusCreated, "text/plain", []byte(shortURL))
+}
+
+func (h *URLHandler) save(originalURL string) (string, error) {
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		id := generateID()
+
+		err := h.repo.Save(id, originalURL)
+		if err == nil {
+			return id, nil
+		}
+		if !errors.Is(err, repository.ErrIDConflict) {
+			return "", err
+		}
+	}
+
+	return "", repository.ErrIDConflict
 }
 
 func (h *URLHandler) Redirect(c *gin.Context) {
@@ -40,4 +80,12 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 
 	c.Header("Location", originalURL)
 	c.Status(http.StatusTemporaryRedirect)
+}
+
+func generateID() string {
+	b := make([]byte, idLength)
+	for i := range b {
+		b[i] = idAlphabet[rand.Intn(len(idAlphabet))]
+	}
+	return string(b)
 }

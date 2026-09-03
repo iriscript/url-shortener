@@ -5,10 +5,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/iriscript/url-shortener/internal/handler"
+	"github.com/iriscript/url-shortener/internal/config"
 )
 
-func NewRouter(h *handler.URLHandler) http.Handler {
+type URLHandler interface {
+	Shorten(c *gin.Context)
+	Redirect(c *gin.Context)
+}
+
+func NewRouter(h URLHandler) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.Default()
@@ -21,8 +26,8 @@ type Server struct {
 	httpServer *http.Server
 }
 
-func New(addr string, router http.Handler) *Server {
-	return &Server{httpServer: &http.Server{Addr: addr, Handler: router}}
+func New(cfg config.ServerConfig, router http.Handler) *Server {
+	return &Server{httpServer: &http.Server{Addr: cfg.Address, Handler: router}}
 }
 
 func (s *Server) Start() error {

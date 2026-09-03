@@ -1,22 +1,19 @@
 package repository
 
 import (
-	"math/rand"
+	"errors"
 	"sync"
 )
 
-const (
-	idAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	idLength   = 8
-)
+var ErrIDConflict = errors.New("id already exists")
 
 type URLRepository interface {
-	Save(originalURL string) (id string)
+	Save(id, originalURL string) error
 	Get(id string) (originalURL string, ok bool)
 }
 
 type MemoryRepository struct {
-	mu sync.RWMutex
+	mu sync.Mutex
 	m  map[string]string
 }
 
@@ -26,33 +23,21 @@ func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{m: make(map[string]string)}
 }
 
-func (r *MemoryRepository) Save(originalURL string) string {
-	id := generateID()
-
+func (r *MemoryRepository) Save(id, originalURL string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for {
-		if _, exists := r.m[id]; !exists {
-			break
-		}
-		id = generateID()
+
+	if _, exists := r.m[id]; exists {
+		return ErrIDConflict
 	}
 	r.m[id] = originalURL
 
-	return id
+	return nil
 }
 
 func (r *MemoryRepository) Get(id string) (string, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	originalURL, ok := r.m[id]
 	return originalURL, ok
-}
-
-func generateID() string {
-	b := make([]byte, idLength)
-	for i := range b {
-		b[i] = idAlphabet[rand.Intn(len(idAlphabet))]
-	}
-	return string(b)
 }
