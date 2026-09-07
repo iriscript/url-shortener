@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -67,7 +68,7 @@ func (h *URLHandler) save(originalURL string) (string, error) {
 			return id, nil
 		}
 		if !errors.Is(err, repository.ErrIDConflict) {
-			return "", err
+			return "", fmt.Errorf("failed to save the URL: %w", err)
 		}
 	}
 
