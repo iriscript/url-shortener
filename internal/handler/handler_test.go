@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/iriscript/url-shortener/internal/router"
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
-	"github.com/iriscript/url-shortener/internal/server"
 )
 
 const baseURL = "http://localhost:8080"
@@ -36,8 +36,8 @@ func (m *mockRepository) Get(id string) (string, bool) {
 func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
 	t.Helper()
 
-	router := server.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
-	ts := httptest.NewServer(router)
+	rout := router.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
+	ts := httptest.NewServer(rout)
 	t.Cleanup(ts.Close)
 
 	return resty.New().

@@ -3,12 +3,12 @@ package handler
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/repository"
@@ -44,14 +44,14 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 
 	id, err := h.save(string(body))
 	if err != nil {
-		log.Printf("shorten: failed to save url: %v", err)
+		log.Error().Err(err).Msg("shorten: failed to save url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}
 
 	shortURL, err := url.JoinPath(h.baseURL, id)
 	if err != nil {
-		log.Printf("shorten: failed to build short url: %v", err)
+		log.Error().Err(err).Msg("shorten: failed to build short url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}

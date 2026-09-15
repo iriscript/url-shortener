@@ -2,9 +2,9 @@ package config
 
 import (
 	"flag"
-	"log"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/rs/zerolog/log"
 )
 
 type ServerConfig struct {
@@ -25,7 +25,7 @@ func New() *Config {
 
 	err := env.Parse(&cfg)
 	if err != nil {
-		log.Printf("config: failed to parse env: %v", err)
+		log.Error().Err(err).Msg("config: failed to parse env")
 	}
 
 	var flagAddr, flagBaseURL string
