@@ -3,6 +3,7 @@ module github.com/iriscript/url-shortener
 go 1.26
 
 require (
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-resty/resty/v2 v2.17.2
 )

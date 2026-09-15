@@ -1,13 +1,18 @@
 package config
 
-import "flag"
+import (
+	"flag"
+	"log"
+
+	"github.com/caarlos0/env/v11"
+)
 
 type ServerConfig struct {
-	Address string
+	Address string `env:"SERVER_ADDRESS"`
 }
 
 type HandlerConfig struct {
-	BaseURL string
+	BaseURL string `env:"BASE_URL"`
 }
 
 type Config struct {
@@ -16,11 +21,24 @@ type Config struct {
 }
 
 func New() *Config {
-	cfg := &Config{}
+	var cfg Config
 
-	flag.StringVar(&cfg.Server.Address, "a", "localhost:8080", "address of the HTTP server")
-	flag.StringVar(&cfg.Handler.BaseURL, "b", "http://localhost:8080", "base address of the resulting shortened URL")
+	err := env.Parse(&cfg)
+	if err != nil {
+		log.Printf("config: failed to parse env: %v", err)
+	}
+
+	var flagAddr, flagBaseURL string
+	flag.StringVar(&flagAddr, "a", "localhost:1234", "address of the HTTP server")
+	flag.StringVar(&flagBaseURL, "b", "http://localhost:1234", "base address of the resulting shortened URL")
 	flag.Parse()
 
-	return cfg
+	if cfg.Server.Address == "" {
+		cfg.Server.Address = flagAddr
+	}
+	if cfg.Handler.BaseURL == "" {
+		cfg.Handler.BaseURL = flagBaseURL
+	}
+
+	return &cfg
 }
