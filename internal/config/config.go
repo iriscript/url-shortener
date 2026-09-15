@@ -29,8 +29,8 @@ func New() *Config {
 	}
 
 	var flagAddr, flagBaseURL string
-	flag.StringVar(&flagAddr, "a", "localhost:1234", "address of the HTTP server")
-	flag.StringVar(&flagBaseURL, "b", "http://localhost:1234", "base address of the resulting shortened URL")
+	flag.StringVar(&flagAddr, "a", "localhost:8080", "address of the HTTP server")
+	flag.StringVar(&flagBaseURL, "b", "http://localhost:8080", "base address of the resulting shortened URL")
 	flag.Parse()
 
 	if cfg.Server.Address == "" {
