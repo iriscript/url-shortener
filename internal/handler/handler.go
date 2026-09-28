@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -20,6 +21,8 @@ const (
 	idLength   = 8
 
 	maxSaveAttempts = 100
+
+	contentTypeJSON = "application/json; charset=utf-8"
 )
 
 type URLRepository interface {
@@ -55,20 +58,36 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 
 func (h *URLHandler) ShortenJSON(c *gin.Context) {
 	var request model.ShortenRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		log.Warn().Err(err).Msg("shortenJSON: failed to bind request body")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+	if err := json.NewDecoder(c.Request.Body).Decode(&request); err != nil {
+		log.Warn().Err(err).Msg("shortenJSON: failed to decode request body")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if request.URL == "" {
+		log.Warn().Msg("shortenJSON: url is empty")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "url is empty"})
 		return
 	}
 
 	shortURL, err := h.shortenURL(request.URL)
 	if err != nil {
 		log.Error().Err(err).Msg("shortenJSON: failed to shorten url")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
 		return
 	}
 
-	c.JSON(http.StatusCreated, model.ShortenResponse{Result: shortURL})
+	writeJSON(c, http.StatusCreated, model.ShortenResponse{Result: shortURL})
+}
+
+func writeJSON(c *gin.Context, status int, response any) {
+	body, err := json.Marshal(response)
+	if err != nil {
+		log.Error().Err(err).Msg("writeJSON: failed to marshal response")
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	c.Data(status, contentTypeJSON, body)
 }
 
 func (h *URLHandler) Redirect(c *gin.Context) {
