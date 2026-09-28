@@ -9,6 +9,7 @@ import (
 
 type URLHandler interface {
 	Shorten(c *gin.Context)
+	ShortenJSON(c *gin.Context)
 	Redirect(c *gin.Context)
 }
 
@@ -19,6 +20,7 @@ func NewRouter(h URLHandler) http.Handler {
 	router.Use(gin.Recovery())
 	router.Use(middleware.LogMiddleware())
 	router.POST("/", h.Shorten)
+	router.POST("/api/shorten", h.ShortenJSON)
 	router.GET("/:id", h.Redirect)
 	return router
 }

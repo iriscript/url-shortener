@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"github.com/gin-gonic/gin"
+	"github.com/iriscript/url-shortener/internal/model"
 	"github.com/rs/zerolog/log"
 
 	"github.com/iriscript/url-shortener/internal/config"
@@ -42,21 +43,54 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 		return
 	}
 
-	id, err := h.save(string(body))
+	shortURL, err := h.shortenURL(string(body))
 	if err != nil {
-		log.Error().Err(err).Msg("shorten: failed to save url")
-		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
-		return
-	}
-
-	shortURL, err := url.JoinPath(h.baseURL, id)
-	if err != nil {
-		log.Error().Err(err).Msg("shorten: failed to build short url")
+		log.Error().Err(err).Msg("shorten: failed to shorten url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}
 
 	c.Data(http.StatusCreated, "text/plain", []byte(shortURL))
+}
+
+func (h *URLHandler) ShortenJSON(c *gin.Context) {
+	var request model.ShortenRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		log.Warn().Err(err).Msg("shortenJSON: failed to bind request body")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	shortURL, err := h.shortenURL(request.URL)
+	if err != nil {
+		log.Error().Err(err).Msg("shortenJSON: failed to shorten url")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+		return
+	}
+
+	c.JSON(http.StatusCreated, model.ShortenResponse{Result: shortURL})
+}
+
+func (h *URLHandler) Redirect(c *gin.Context) {
+	id := c.Param("id")
+
+	originalURL, ok := h.repo.Get(id)
+	if !ok {
+		c.String(http.StatusBadRequest, "unknown short URL id")
+		return
+	}
+
+	c.Header("Location", originalURL)
+	c.Status(http.StatusTemporaryRedirect)
+}
+
+func (h *URLHandler) shortenURL(originalURL string) (string, error) {
+	id, err := h.save(originalURL)
+	if err != nil {
+		return "", err
+	}
+
+	return url.JoinPath(h.baseURL, id)
 }
 
 func (h *URLHandler) save(originalURL string) (string, error) {
@@ -73,19 +107,6 @@ func (h *URLHandler) save(originalURL string) (string, error) {
 	}
 
 	return "", repository.ErrIDConflict
-}
-
-func (h *URLHandler) Redirect(c *gin.Context) {
-	id := c.Param("id")
-
-	originalURL, ok := h.repo.Get(id)
-	if !ok {
-		c.String(http.StatusBadRequest, "unknown short URL id")
-		return
-	}
-
-	c.Header("Location", originalURL)
-	c.Status(http.StatusTemporaryRedirect)
 }
 
 func generateID() string {
