@@ -19,6 +19,7 @@ func NewRouter(h URLHandler) http.Handler {
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(middleware.LogMiddleware())
+	router.Use(middleware.GzipMiddleware())
 	router.POST("/", h.Shorten)
 	router.POST("/api/shorten", h.ShortenJSON)
 	router.GET("/:id", h.Redirect)

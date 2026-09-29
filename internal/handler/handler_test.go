@@ -1,6 +1,8 @@
 package handler_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,12 +38,20 @@ func (m *mockRepository) Get(id string) (string, bool) {
 	return m.getFunc(id)
 }
 
-func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
+func newTestHTTPServer(t *testing.T, repo handler.URLRepository) *httptest.Server {
 	t.Helper()
 
 	rout := router.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
 	ts := httptest.NewServer(rout)
 	t.Cleanup(ts.Close)
+
+	return ts
+}
+
+func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
+	t.Helper()
+
+	ts := newTestHTTPServer(t, repo)
 
 	return resty.New().
 		SetBaseURL(ts.URL).
@@ -424,5 +434,57 @@ func TestURLHandler_ShortenJSONAndRedirect_RoundTrip(t *testing.T) {
 
 	if loc := getResp.Header().Get("Location"); loc != originalURL {
 		t.Errorf("Location = %q, want %q", loc, originalURL)
+	}
+}
+
+func TestURLHandler_ShortenJSON_Gzip(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+
+	ts := newTestHTTPServer(t, repository.NewMemoryRepository())
+
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write([]byte(`{"url":"` + originalURL + `"}`)); err != nil {
+		t.Fatalf("failed to compress request body: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/shorten", &compressed)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	if enc := resp.Header.Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want %q", enc, "gzip")
+	}
+
+	gr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("response body is not valid gzip: %v", err)
+	}
+	defer func() { _ = gr.Close() }()
+
+	var got model.ShortenResponse
+	if err := json.NewDecoder(gr).Decode(&got); err != nil {
+		t.Fatalf("failed to decode decompressed response: %v", err)
+	}
+
+	if !shortURLPattern.MatchString(got.Result) {
+		t.Errorf("result = %q, want match of %q", got.Result, shortURLPattern.String())
 	}
 }
