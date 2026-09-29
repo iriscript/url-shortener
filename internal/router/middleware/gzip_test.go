@@ -50,7 +50,14 @@ func newGzipTestServer(t *testing.T) *httptest.Server {
 	return ts
 }
 
-func do(t *testing.T, method, url string, header http.Header, body []byte) *http.Response {
+type testResponse struct {
+	statusCode    int
+	header        http.Header
+	contentLength int64
+	body          []byte
+}
+
+func do(t *testing.T, method, url string, header http.Header, body []byte) testResponse {
 	t.Helper()
 
 	var reader io.Reader
@@ -70,9 +77,19 @@ func do(t *testing.T, method, url string, header http.Header, body []byte) *http
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
+	defer func() { _ = resp.Body.Close() }()
 
-	return resp
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+
+	return testResponse{
+		statusCode:    resp.StatusCode,
+		header:        resp.Header,
+		contentLength: resp.ContentLength,
+		body:          raw,
+	}
 }
 
 func mustGzip(t *testing.T, data []byte) []byte {
@@ -90,21 +107,21 @@ func mustGzip(t *testing.T, data []byte) []byte {
 	return buf.Bytes()
 }
 
-func mustGunzip(t *testing.T, r io.Reader) string {
+func mustGunzip(t *testing.T, data []byte) string {
 	t.Helper()
 
-	gr, err := gzip.NewReader(r)
+	gr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("response body is not valid gzip: %v", err)
 	}
 	defer func() { _ = gr.Close() }()
 
-	data, err := io.ReadAll(gr)
+	decompressed, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("failed to decompress response: %v", err)
 	}
 
-	return string(data)
+	return string(decompressed)
 }
 
 func TestGzipMiddleware_CompressesByContentType(t *testing.T) {
@@ -126,22 +143,18 @@ func TestGzipMiddleware_CompressesByContentType(t *testing.T) {
 			header := http.Header{"Accept-Encoding": []string{"gzip"}}
 			resp := do(t, http.MethodGet, ts.URL+tt.path, header, nil)
 
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+			if resp.statusCode != http.StatusOK {
+				t.Fatalf("status = %d, want %d", resp.statusCode, http.StatusOK)
 			}
 
-			enc := resp.Header.Get("Content-Encoding")
+			enc := resp.header.Get("Content-Encoding")
 			if !tt.wantCompress {
 				if enc != "" {
 					t.Fatalf("Content-Encoding = %q, want empty", enc)
 				}
 
-				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					t.Fatalf("failed to read body: %v", err)
-				}
-				if string(body) != tt.wantBody {
-					t.Errorf("body = %q, want %q", body, tt.wantBody)
+				if string(resp.body) != tt.wantBody {
+					t.Errorf("body = %q, want %q", resp.body, tt.wantBody)
 				}
 				return
 			}
@@ -150,18 +163,13 @@ func TestGzipMiddleware_CompressesByContentType(t *testing.T) {
 				t.Fatalf("Content-Encoding = %q, want %q", enc, "gzip")
 			}
 
-			raw, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("failed to read body: %v", err)
-			}
-
 			// Content-Length должен описывать сжатое тело. Если бы обёртка не удаляла
 			// заголовок, выставленный render.Data, здесь осталась бы длина исходных данных.
-			if resp.ContentLength != -1 && resp.ContentLength != int64(len(raw)) {
-				t.Errorf("Content-Length = %d, want %d (actual compressed size)", resp.ContentLength, len(raw))
+			if resp.contentLength != -1 && resp.contentLength != int64(len(resp.body)) {
+				t.Errorf("Content-Length = %d, want %d (actual compressed size)", resp.contentLength, len(resp.body))
 			}
 
-			if got := mustGunzip(t, bytes.NewReader(raw)); got != tt.wantBody {
+			if got := mustGunzip(t, resp.body); got != tt.wantBody {
 				t.Errorf("decompressed body = %q, want %q", got, tt.wantBody)
 			}
 		})
@@ -174,21 +182,16 @@ func TestGzipMiddleware_SkipsWithoutAcceptEncoding(t *testing.T) {
 	header := http.Header{"Accept-Encoding": []string{"identity"}}
 	resp := do(t, http.MethodGet, ts.URL+"/json", header, nil)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if resp.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.statusCode, http.StatusOK)
 	}
 
-	if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+	if enc := resp.header.Get("Content-Encoding"); enc != "" {
 		t.Fatalf("Content-Encoding = %q, want empty", enc)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read body: %v", err)
-	}
-
-	if string(body) != jsonBody {
-		t.Errorf("body = %q, want %q", body, jsonBody)
+	if string(resp.body) != jsonBody {
+		t.Errorf("body = %q, want %q", resp.body, jsonBody)
 	}
 }
 
@@ -202,17 +205,12 @@ func TestGzipMiddleware_DecompressesRequest(t *testing.T) {
 	}
 	resp := do(t, http.MethodPost, ts.URL+"/echo", header, mustGzip(t, []byte(jsonBody)))
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if resp.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.statusCode, http.StatusOK)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read body: %v", err)
-	}
-
-	if string(body) != jsonBody {
-		t.Errorf("handler received %q, want %q", body, jsonBody)
+	if string(resp.body) != jsonBody {
+		t.Errorf("handler received %q, want %q", resp.body, jsonBody)
 	}
 }
 
@@ -225,8 +223,8 @@ func TestGzipMiddleware_RejectsInvalidGzipRequest(t *testing.T) {
 	}
 	resp := do(t, http.MethodPost, ts.URL+"/echo", header, []byte("this is not gzip"))
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	if resp.statusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.statusCode, http.StatusBadRequest)
 	}
 }
 
@@ -240,15 +238,15 @@ func TestGzipMiddleware_CompressesBothWays(t *testing.T) {
 	}
 	resp := do(t, http.MethodPost, ts.URL+"/echo", header, mustGzip(t, []byte(jsonBody)))
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if resp.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.statusCode, http.StatusOK)
 	}
 
-	if enc := resp.Header.Get("Content-Encoding"); enc != "gzip" {
+	if enc := resp.header.Get("Content-Encoding"); enc != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want %q", enc, "gzip")
 	}
 
-	if got := mustGunzip(t, resp.Body); got != jsonBody {
+	if got := mustGunzip(t, resp.body); got != jsonBody {
 		t.Errorf("decompressed body = %q, want %q", got, jsonBody)
 	}
 }
