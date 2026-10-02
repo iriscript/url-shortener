@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/iriscript/url-shortener/internal/config"
@@ -16,4 +17,8 @@ func New(cfg config.ServerConfig, router http.Handler) *Server {
 
 func (s *Server) Start() error {
 	return s.httpServer.ListenAndServe()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
 }

@@ -23,10 +23,12 @@ type record struct {
 }
 
 type FileRepository struct {
-	mu    sync.Mutex
-	index map[string]string
-	count int
-	path  string
+	mu      sync.Mutex
+	index   map[string]string
+	count   int
+	path    string
+	file    *os.File
+	encoder *json.Encoder
 }
 
 func NewFileRepository(path string) (*FileRepository, error) {
@@ -42,6 +44,14 @@ func NewFileRepository(path string) (*FileRepository, error) {
 	if err := r.load(); err != nil {
 		return nil, err
 	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, storageFilePerm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open storage file: %w", err)
+	}
+
+	r.file = file
+	r.encoder = json.NewEncoder(file)
 
 	return r, nil
 }
@@ -104,18 +114,30 @@ func (r *FileRepository) Get(id string) (string, bool) {
 }
 
 func (r *FileRepository) append(rec record) error {
-	file, err := os.OpenFile(r.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, storageFilePerm)
-	if err != nil {
-		return fmt.Errorf("failed to open storage file: %w", err)
+	if r.file == nil {
+		return ErrClosed
 	}
 
-	if err := json.NewEncoder(file).Encode(rec); err != nil {
-		_ = file.Close()
-
+	if err := r.encoder.Encode(rec); err != nil {
 		return fmt.Errorf("failed to write record: %w", err)
 	}
 
-	if err := file.Close(); err != nil {
+	return nil
+}
+
+func (r *FileRepository) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.file == nil {
+		return nil
+	}
+
+	err := r.file.Close()
+	r.file = nil
+	r.encoder = nil
+
+	if err != nil {
 		return fmt.Errorf("failed to close storage file: %w", err)
 	}
 

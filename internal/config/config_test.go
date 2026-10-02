@@ -83,7 +83,7 @@ func TestParse_Priority(t *testing.T) {
 	}
 }
 
-func TestParse_ReturnsUsableConfigOnError(t *testing.T) {
+func TestParse_ReturnsDefaultsAlongsideError(t *testing.T) {
 	cfg, err := parse([]string{"-unknown-flag"}, map[string]string{})
 	if err == nil {
 		t.Fatal("parse returned nil error on an unknown flag, want an error")

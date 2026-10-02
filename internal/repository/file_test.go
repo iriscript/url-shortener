@@ -27,6 +27,7 @@ func mustNewFileRepository(t *testing.T, path string) *FileRepository {
 	if err != nil {
 		t.Fatalf("NewFileRepository failed: %v", err)
 	}
+	t.Cleanup(func() { _ = repo.Close() })
 
 	return repo
 }
@@ -93,6 +94,9 @@ func TestFileRepository_RestoresAfterRestart(t *testing.T) {
 	if err := first.Save("4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
 
 	restarted := mustNewFileRepository(t, path)
 
@@ -111,6 +115,9 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 	first := mustNewFileRepository(t, path)
 	if err := first.Save("4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
 	}
 
 	restarted := mustNewFileRepository(t, path)
@@ -159,6 +166,48 @@ func TestFileRepository_StartsEmptyWhenFileIsEmpty(t *testing.T) {
 
 	if _, ok := repo.Get("4rSPg8ap"); ok {
 		t.Error("Get returned ok = true on an empty storage file, want false")
+	}
+}
+
+func TestFileRepository_IsIdempotentOnRepeatedClose(t *testing.T) {
+	repo := mustNewFileRepository(t, newRepoPath(t))
+
+	if err := repo.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil", err)
+	}
+}
+
+func TestFileRepository_RejectsSaveAfterClose(t *testing.T) {
+	repo := mustNewFileRepository(t, newRepoPath(t))
+
+	if err := repo.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	err := repo.Save("4rSPg8ap", yandexURL)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("Save error = %v, want %v", err, ErrClosed)
+	}
+}
+
+func TestFileRepository_KeepsRecordsWrittenBeforeClose(t *testing.T) {
+	path := newRepoPath(t)
+	repo := mustNewFileRepository(t, path)
+
+	if err := repo.Save("4rSPg8ap", yandexURL); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	got := readRecords(t, path)
+	want := []record{{UUID: "1", ShortURL: "4rSPg8ap", OriginalURL: yandexURL}}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("records = %+v, want %+v", got, want)
 	}
 }
 

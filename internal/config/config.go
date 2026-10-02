@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"os"
 
@@ -34,8 +35,11 @@ type Config struct {
 
 func New() *Config {
 	cfg, err := parse(os.Args[1:], nil)
+	if errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	}
 	if err != nil {
-		log.Error().Err(err).Msg("config: failed to parse configuration")
+		log.Fatal().Err(err).Msg("config: failed to parse configuration")
 	}
 
 	return cfg
