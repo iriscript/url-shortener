@@ -1,17 +1,22 @@
 package handler_test
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/iriscript/url-shortener/internal/model"
+	"github.com/iriscript/url-shortener/internal/router"
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
-	"github.com/iriscript/url-shortener/internal/server"
 )
 
 const baseURL = "http://localhost:8080"
@@ -33,12 +38,20 @@ func (m *mockRepository) Get(id string) (string, bool) {
 	return m.getFunc(id)
 }
 
+func newTestHTTPServer(t *testing.T, repo handler.URLRepository) *httptest.Server {
+	t.Helper()
+
+	rout := router.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
+	ts := httptest.NewServer(rout)
+	t.Cleanup(ts.Close)
+
+	return ts
+}
+
 func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
 	t.Helper()
 
-	router := server.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
-	ts := httptest.NewServer(router)
-	t.Cleanup(ts.Close)
+	ts := newTestHTTPServer(t, repo)
 
 	return resty.New().
 		SetBaseURL(ts.URL).
@@ -157,6 +170,135 @@ func TestURLHandler_Shorten_ReturnsInternalErrorWhenIDsExhausted(t *testing.T) {
 	}
 }
 
+func TestURLHandler_ShortenJSON(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "valid url",
+			body:       `{"url":"https://practicum.yandex.ru/"}`,
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "empty url",
+			body:       `{"url":""}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "malformed json",
+			body:       `{`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "empty body",
+			body:       "",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newTestServer(t, repository.NewMemoryRepository())
+
+			resp, err := client.R().
+				SetHeader("Content-Type", "application/json").
+				SetBody(tt.body).
+				Post("/api/shorten")
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+
+			if resp.StatusCode() != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode(), tt.wantStatus)
+			}
+
+			if ct := resp.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want %q", ct, "application/json; charset=utf-8")
+			}
+
+			if tt.wantStatus != http.StatusCreated {
+				return
+			}
+
+			var got model.ShortenResponse
+			if err := json.Unmarshal(resp.Body(), &got); err != nil {
+				t.Fatalf("failed to decode response %q: %v", resp.String(), err)
+			}
+
+			if !shortURLPattern.MatchString(got.Result) {
+				t.Errorf("result = %q, want match of %q", got.Result, shortURLPattern.String())
+			}
+		})
+	}
+}
+
+func TestURLHandler_ShortenJSON_UsesRepository(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+
+	var gotSavedID, gotSavedURL string
+	mock := &mockRepository{
+		saveFunc: func(id, url string) error {
+			gotSavedID = id
+			gotSavedURL = url
+			return nil
+		},
+	}
+
+	client := newTestServer(t, mock)
+
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(model.ShortenRequest{URL: originalURL}).
+		Post("/api/shorten")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if resp.StatusCode() != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusCreated)
+	}
+
+	if gotSavedURL != originalURL {
+		t.Errorf("repo.Save called with %q, want %q", gotSavedURL, originalURL)
+	}
+
+	var got model.ShortenResponse
+	if err := json.Unmarshal(resp.Body(), &got); err != nil {
+		t.Fatalf("failed to decode response %q: %v", resp.String(), err)
+	}
+
+	wantResult := baseURL + "/" + gotSavedID
+	if got.Result != wantResult {
+		t.Errorf("result = %q, want %q", got.Result, wantResult)
+	}
+}
+
+func TestURLHandler_ShortenJSON_ReturnsInternalErrorWhenIDsExhausted(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+
+	mock := &mockRepository{
+		saveFunc: func(id, url string) error {
+			return repository.ErrIDConflict
+		},
+	}
+
+	client := newTestServer(t, mock)
+
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(model.ShortenRequest{URL: originalURL}).
+		Post("/api/shorten")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if resp.StatusCode() != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusInternalServerError)
+	}
+}
+
 func TestURLHandler_Redirect(t *testing.T) {
 	const originalURL = "https://practicum.yandex.ru/"
 	const knownID = "knownID1"
@@ -254,5 +396,95 @@ func TestURLHandler_ShortenAndRedirect_RoundTrip(t *testing.T) {
 
 	if loc := getResp.Header().Get("Location"); loc != originalURL {
 		t.Errorf("Location = %q, want %q", loc, originalURL)
+	}
+}
+
+func TestURLHandler_ShortenJSONAndRedirect_RoundTrip(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+
+	client := newTestServer(t, repository.NewMemoryRepository())
+
+	postResp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(model.ShortenRequest{URL: originalURL}).
+		Post("/api/shorten")
+	if err != nil {
+		t.Fatalf("POST request failed: %v", err)
+	}
+
+	if postResp.StatusCode() != http.StatusCreated {
+		t.Fatalf("POST status = %d, want %d", postResp.StatusCode(), http.StatusCreated)
+	}
+
+	var shortened model.ShortenResponse
+	if err := json.Unmarshal(postResp.Body(), &shortened); err != nil {
+		t.Fatalf("failed to decode response %q: %v", postResp.String(), err)
+	}
+
+	id := strings.TrimPrefix(shortened.Result, baseURL+"/")
+
+	getResp, err := client.R().Get("/" + id)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+
+	if getResp.StatusCode() != http.StatusTemporaryRedirect {
+		t.Fatalf("GET status = %d, want %d", getResp.StatusCode(), http.StatusTemporaryRedirect)
+	}
+
+	if loc := getResp.Header().Get("Location"); loc != originalURL {
+		t.Errorf("Location = %q, want %q", loc, originalURL)
+	}
+}
+
+func TestURLHandler_ShortenJSON_Gzip(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+
+	ts := newTestHTTPServer(t, repository.NewMemoryRepository())
+
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write([]byte(`{"url":"` + originalURL + `"}`)); err != nil {
+		t.Fatalf("failed to compress request body: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/shorten", &compressed)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	if enc := resp.Header.Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want %q", enc, "gzip")
+	}
+
+	gr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("response body is not valid gzip: %v", err)
+	}
+	defer func() { _ = gr.Close() }()
+
+	var got model.ShortenResponse
+	if err := json.NewDecoder(gr).Decode(&got); err != nil {
+		t.Fatalf("failed to decode decompressed response: %v", err)
+	}
+
+	if !shortURLPattern.MatchString(got.Result) {
+		t.Errorf("result = %q, want match of %q", got.Result, shortURLPattern.String())
 	}
 }

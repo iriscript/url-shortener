@@ -5,7 +5,10 @@ import (
 	"sync"
 )
 
-var ErrIDConflict = errors.New("id already exists")
+var (
+	ErrIDConflict = errors.New("id already exists")
+	ErrClosed     = errors.New("repository is closed")
+)
 
 type MemoryRepository struct {
 	mu sync.Mutex
