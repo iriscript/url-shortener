@@ -13,7 +13,11 @@ type URLHandler interface {
 	Redirect(c *gin.Context)
 }
 
-func NewRouter(h URLHandler) http.Handler {
+type PingHandler interface {
+	Ping(c *gin.Context)
+}
+
+func NewRouter(h URLHandler, p PingHandler) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
@@ -22,6 +26,7 @@ func NewRouter(h URLHandler) http.Handler {
 	router.Use(middleware.GzipMiddleware())
 	router.POST("/", h.Shorten)
 	router.POST("/api/shorten", h.ShortenJSON)
+	router.GET("/ping", p.Ping)
 	router.GET("/:id", h.Redirect)
 	return router
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/iriscript/url-shortener/internal/app/logger"
 	"github.com/iriscript/url-shortener/internal/config"
+	"github.com/iriscript/url-shortener/internal/database"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
 	"github.com/iriscript/url-shortener/internal/router"
@@ -48,8 +49,20 @@ func run() error {
 		}()
 	}
 
+	db, err := database.New(ctx, cfg.Database)
+	if err != nil {
+		// The service stays up without a database: GET /ping reports the failure.
+		log.Error().Err(err).Msg("Failed to init database connection")
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close database connection")
+		}
+	}()
+
 	h := handler.NewURLHandler(repo, cfg.Handler)
-	rout := router.NewRouter(h)
+	ping := handler.NewPingHandler(db)
+	rout := router.NewRouter(h, ping)
 	srv := server.New(cfg.Server, rout)
 
 	errCh := make(chan error, 1)

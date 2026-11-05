@@ -3,6 +3,7 @@ package handler_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,10 @@ func (m *mockRepository) Get(id string) (string, bool) {
 func newTestHTTPServer(t *testing.T, repo handler.URLRepository) *httptest.Server {
 	t.Helper()
 
-	rout := router.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
+	rout := router.NewRouter(
+		handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}),
+		handler.NewPingHandler(&mockPinger{pingFunc: func(context.Context) error { return nil }}),
+	)
 	ts := httptest.NewServer(rout)
 	t.Cleanup(ts.Close)
 
