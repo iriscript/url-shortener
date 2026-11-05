@@ -27,8 +27,8 @@ const (
 )
 
 type URLRepository interface {
-	Save(ctx context.Context, id, originalURL string) error
-	SaveBatch(ctx context.Context, records []repository.URLRecord) error
+	Save(ctx context.Context, id, originalURL string) (storedID string, err error)
+	SaveBatch(ctx context.Context, records []repository.URLRecord) (stored []repository.URLRecord, err error)
 	Get(ctx context.Context, id string) (originalURL string, ok bool)
 }
 
@@ -48,14 +48,19 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 		return
 	}
 
-	shortURL, err := h.shortenURL(c.Request.Context(), string(body))
+	shortURL, existed, err := h.shortenURL(c.Request.Context(), string(body))
 	if err != nil {
 		log.Error().Err(err).Msg("shorten: failed to shorten url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}
 
-	c.Data(http.StatusCreated, "text/plain", []byte(shortURL))
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusConflict
+	}
+
+	c.Data(status, "text/plain", []byte(shortURL))
 }
 
 func (h *URLHandler) ShortenJSON(c *gin.Context) {
@@ -71,14 +76,19 @@ func (h *URLHandler) ShortenJSON(c *gin.Context) {
 		return
 	}
 
-	shortURL, err := h.shortenURL(c.Request.Context(), request.URL)
+	shortURL, existed, err := h.shortenURL(c.Request.Context(), request.URL)
 	if err != nil {
 		log.Error().Err(err).Msg("shortenJSON: failed to shorten url")
 		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
 		return
 	}
 
-	writeJSON(c, http.StatusCreated, model.ShortenResponse{Result: shortURL})
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusConflict
+	}
+
+	writeJSON(c, status, model.ShortenResponse{Result: shortURL})
 }
 
 func (h *URLHandler) ShortenBatch(c *gin.Context) {
@@ -112,14 +122,25 @@ func (h *URLHandler) ShortenBatch(c *gin.Context) {
 }
 
 func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequestItem) ([]model.BatchResponseItem, error) {
-	records := make([]repository.URLRecord, len(request))
-
-	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
-		for i, item := range request {
-			records[i] = repository.URLRecord{ID: generateID(), OriginalURL: item.OriginalURL}
+	uniqueURLs := make([]string, 0, len(request))
+	positions := make(map[string]int, len(request))
+	for _, item := range request {
+		if _, seen := positions[item.OriginalURL]; seen {
+			continue
 		}
 
-		err := h.repo.SaveBatch(ctx, records)
+		positions[item.OriginalURL] = len(uniqueURLs)
+		uniqueURLs = append(uniqueURLs, item.OriginalURL)
+	}
+
+	records := make([]repository.URLRecord, len(uniqueURLs))
+
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		for i, originalURL := range uniqueURLs {
+			records[i] = repository.URLRecord{ID: generateID(), OriginalURL: originalURL}
+		}
+
+		stored, err := h.repo.SaveBatch(ctx, records)
 		if errors.Is(err, repository.ErrIDConflict) {
 			continue
 		}
@@ -129,7 +150,7 @@ func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequ
 
 		response := make([]model.BatchResponseItem, len(request))
 		for i, item := range request {
-			shortURL, err := url.JoinPath(h.baseURL, records[i].ID)
+			shortURL, err := url.JoinPath(h.baseURL, stored[positions[item.OriginalURL]].ID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to build the short URL: %w", err)
 			}
@@ -167,29 +188,37 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 	c.Status(http.StatusTemporaryRedirect)
 }
 
-func (h *URLHandler) shortenURL(ctx context.Context, originalURL string) (string, error) {
-	id, err := h.save(ctx, originalURL)
+func (h *URLHandler) shortenURL(ctx context.Context, originalURL string) (string, bool, error) {
+	id, existed, err := h.save(ctx, originalURL)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
-	return url.JoinPath(h.baseURL, id)
+	shortURL, err := url.JoinPath(h.baseURL, id)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to build the short URL: %w", err)
+	}
+
+	return shortURL, existed, nil
 }
 
-func (h *URLHandler) save(ctx context.Context, originalURL string) (string, error) {
+func (h *URLHandler) save(ctx context.Context, originalURL string) (string, bool, error) {
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
 		id := generateID()
 
-		err := h.repo.Save(ctx, id, originalURL)
+		storedID, err := h.repo.Save(ctx, id, originalURL)
 		if err == nil {
-			return id, nil
+			return storedID, false, nil
+		}
+		if errors.Is(err, repository.ErrURLConflict) {
+			return storedID, true, nil
 		}
 		if !errors.Is(err, repository.ErrIDConflict) {
-			return "", fmt.Errorf("failed to save the URL: %w", err)
+			return "", false, fmt.Errorf("failed to save the URL: %w", err)
 		}
 	}
 
-	return "", repository.ErrIDConflict
+	return "", false, repository.ErrIDConflict
 }
 
 func generateID() string {

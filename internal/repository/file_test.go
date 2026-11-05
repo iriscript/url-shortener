@@ -64,10 +64,10 @@ func TestFileRepository_WritesExpectedFormat(t *testing.T) {
 	path := newRepoPath(t)
 	repo := mustNewFileRepository(t, path)
 
-	if err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
+	if _, err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
-	if err := repo.Save(context.Background(), "dG56Hqxm", practicumURL); err != nil {
+	if _, err := repo.Save(context.Background(), "dG56Hqxm", practicumURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -92,7 +92,7 @@ func TestFileRepository_RestoresAfterRestart(t *testing.T) {
 	path := newRepoPath(t)
 
 	first := mustNewFileRepository(t, path)
-	if err := first.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
+	if _, err := first.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	if err := first.Close(); err != nil {
@@ -114,7 +114,7 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 	path := newRepoPath(t)
 
 	first := mustNewFileRepository(t, path)
-	if err := first.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
+	if _, err := first.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	if err := first.Close(); err != nil {
@@ -122,7 +122,7 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 	}
 
 	restarted := mustNewFileRepository(t, path)
-	if err := restarted.Save(context.Background(), "dG56Hqxm", practicumURL); err != nil {
+	if _, err := restarted.Save(context.Background(), "dG56Hqxm", practicumURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -139,11 +139,11 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 func TestFileRepository_ReturnsConflictOnDuplicateID(t *testing.T) {
 	repo := mustNewFileRepository(t, newRepoPath(t))
 
-	if err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
+	if _, err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	err := repo.Save(context.Background(), "4rSPg8ap", practicumURL)
+	_, err := repo.Save(context.Background(), "4rSPg8ap", practicumURL)
 	if !errors.Is(err, ErrIDConflict) {
 		t.Fatalf("Save error = %v, want %v", err, ErrIDConflict)
 	}
@@ -188,7 +188,7 @@ func TestFileRepository_RejectsSaveAfterClose(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	err := repo.Save(context.Background(), "4rSPg8ap", yandexURL)
+	_, err := repo.Save(context.Background(), "4rSPg8ap", yandexURL)
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("Save error = %v, want %v", err, ErrClosed)
 	}
@@ -198,7 +198,7 @@ func TestFileRepository_KeepsRecordsWrittenBeforeClose(t *testing.T) {
 	path := newRepoPath(t)
 	repo := mustNewFileRepository(t, path)
 
-	if err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
+	if _, err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	if err := repo.Close(); err != nil {

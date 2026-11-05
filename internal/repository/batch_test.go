@@ -12,8 +12,8 @@ import (
 )
 
 type batchRepository interface {
-	Save(ctx context.Context, id, originalURL string) error
-	SaveBatch(ctx context.Context, records []repository.URLRecord) error
+	Save(ctx context.Context, id, originalURL string) (string, error)
+	SaveBatch(ctx context.Context, records []repository.URLRecord) ([]repository.URLRecord, error)
 	Get(ctx context.Context, id string) (string, bool)
 }
 
@@ -42,7 +42,7 @@ func TestSaveBatch_StoresEveryRecord(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 
-			if err := repo.SaveBatch(ctx, records); err != nil {
+			if _, err := repo.SaveBatch(ctx, records); err != nil {
 				t.Fatalf("SaveBatch failed: %v", err)
 			}
 
@@ -64,11 +64,11 @@ func TestSaveBatch_RejectsIDAlreadyStoredAndWritesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 
-			if err := repo.Save(ctx, "existing", "https://practicum.yandex.ru/"); err != nil {
+			if _, err := repo.Save(ctx, "existing", "https://practicum.yandex.ru/"); err != nil {
 				t.Fatalf("Save failed: %v", err)
 			}
 
-			err := repo.SaveBatch(ctx, []repository.URLRecord{
+			_, err := repo.SaveBatch(ctx, []repository.URLRecord{
 				{ID: "fresh001", OriginalURL: "https://ya.ru/"},
 				{ID: "existing", OriginalURL: "https://go.dev/"},
 			})
@@ -88,7 +88,7 @@ func TestSaveBatch_RejectsDuplicateIDsInsideTheBatch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 
-			err := repo.SaveBatch(ctx, []repository.URLRecord{
+			_, err := repo.SaveBatch(ctx, []repository.URLRecord{
 				{ID: "sameIdAA", OriginalURL: "https://practicum.yandex.ru/"},
 				{ID: "sameIdAA", OriginalURL: "https://ya.ru/"},
 			})
@@ -129,7 +129,7 @@ func TestSaveBatch_IsSafeUnderConcurrency(t *testing.T) {
 						}
 					}
 
-					if err := repo.SaveBatch(ctx, records); err != nil {
+					if _, err := repo.SaveBatch(ctx, records); err != nil {
 						t.Errorf("SaveBatch failed: %v", err)
 					}
 				}(g)
@@ -150,6 +150,73 @@ func TestSaveBatch_IsSafeUnderConcurrency(t *testing.T) {
 						t.Errorf("Get(%q) = %q, want %q", id, got, want)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestSave_ReturnsExistingIDForKnownURL(t *testing.T) {
+	const originalURL = "https://practicum.yandex.ru/"
+
+	for name, repo := range batchBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+
+			firstID, err := repo.Save(ctx, "firstId1", originalURL)
+			if err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+			if firstID != "firstId1" {
+				t.Fatalf("Save returned id %q, want %q", firstID, "firstId1")
+			}
+
+			secondID, err := repo.Save(ctx, "secondId", originalURL)
+			if !errors.Is(err, repository.ErrURLConflict) {
+				t.Fatalf("Save error = %v, want %v", err, repository.ErrURLConflict)
+			}
+			if secondID != firstID {
+				t.Errorf("Save returned id %q, want the already stored %q", secondID, firstID)
+			}
+
+			if got, _ := repo.Get(ctx, "secondId"); got != "" {
+				t.Error("the rejected id was stored anyway")
+			}
+		})
+	}
+}
+
+func TestSaveBatch_ReusesExistingIDForKnownURL(t *testing.T) {
+	const knownURL = "https://practicum.yandex.ru/"
+
+	for name, repo := range batchBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+
+			knownID, err := repo.Save(ctx, "knownId1", knownURL)
+			if err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+
+			stored, err := repo.SaveBatch(ctx, []repository.URLRecord{
+				{ID: "newId001", OriginalURL: "https://ya.ru/"},
+				{ID: "newId002", OriginalURL: knownURL},
+			})
+			if err != nil {
+				t.Fatalf("SaveBatch failed: %v", err)
+			}
+
+			if len(stored) != 2 {
+				t.Fatalf("SaveBatch returned %d records, want 2", len(stored))
+			}
+			if stored[0].ID != "newId001" {
+				t.Errorf("fresh record id = %q, want %q", stored[0].ID, "newId001")
+			}
+			if stored[1].ID != knownID {
+				t.Errorf("known URL got id %q, want the already stored %q", stored[1].ID, knownID)
+			}
+
+			if got, _ := repo.Get(ctx, "newId002"); got != "" {
+				t.Error("a second id was stored for an already known URL")
 			}
 		})
 	}

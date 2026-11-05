@@ -56,7 +56,7 @@ func TestPostgresRepository_SaveAndGet(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
 	})
 
-	if err := repo.Save(ctx, id, originalURL); err != nil {
+	if _, err := repo.Save(ctx, id, originalURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -83,11 +83,11 @@ func TestPostgresRepository_SaveReturnsIDConflict(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
 	})
 
-	if err := repo.Save(ctx, id, originalURL); err != nil {
+	if _, err := repo.Save(ctx, id, originalURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	err := repo.Save(ctx, id, "https://ya.ru/")
+	_, err := repo.Save(ctx, id, "https://ya.ru/")
 	if !errors.Is(err, repository.ErrIDConflict) {
 		t.Errorf("Save error = %v, want %v", err, repository.ErrIDConflict)
 	}
@@ -108,7 +108,7 @@ func TestPostgresRepository_SaveBatch(t *testing.T) {
 			`DELETE FROM short_urls WHERE short_id LIKE 'pgBatch%'`)
 	})
 
-	if err := repo.SaveBatch(ctx, records); err != nil {
+	if _, err := repo.SaveBatch(ctx, records); err != nil {
 		t.Fatalf("SaveBatch failed: %v", err)
 	}
 
@@ -133,11 +133,11 @@ func TestPostgresRepository_SaveBatchIsAtomicOnConflict(t *testing.T) {
 			`DELETE FROM short_urls WHERE short_id LIKE 'pgAtomic%'`)
 	})
 
-	if err := repo.Save(ctx, "pgAtomic1", "https://practicum.yandex.ru/"); err != nil {
+	if _, err := repo.Save(ctx, "pgAtomic1", "https://practicum.yandex.ru/"); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	err := repo.SaveBatch(ctx, []repository.URLRecord{
+	_, err := repo.SaveBatch(ctx, []repository.URLRecord{
 		{ID: "pgAtomic2", OriginalURL: "https://ya.ru/"},
 		{ID: "pgAtomic1", OriginalURL: "https://go.dev/"},
 	})
@@ -147,6 +147,113 @@ func TestPostgresRepository_SaveBatchIsAtomicOnConflict(t *testing.T) {
 
 	if _, ok := repo.Get(ctx, "pgAtomic2"); ok {
 		t.Error("a record from the rejected batch was stored")
+	}
+}
+
+func TestPostgresRepository_SaveReturnsExistingIDForKnownURL(t *testing.T) {
+	const originalURL = "https://pg-conflict.example.com/"
+
+	ctx := t.Context()
+	pool := newTestPool(t)
+	repo := repository.NewPostgresRepository(pool)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM short_urls WHERE original_url = $1`, originalURL)
+	})
+
+	firstID, err := repo.Save(ctx, "pgKnown1", originalURL)
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	secondID, err := repo.Save(ctx, "pgKnown2", originalURL)
+	if !errors.Is(err, repository.ErrURLConflict) {
+		t.Fatalf("Save error = %v, want %v", err, repository.ErrURLConflict)
+	}
+	if secondID != firstID {
+		t.Errorf("Save returned id %q, want the already stored %q", secondID, firstID)
+	}
+
+	if _, ok := repo.Get(ctx, "pgKnown2"); ok {
+		t.Error("the rejected id was stored anyway")
+	}
+}
+
+func TestPostgresRepository_SaveBatchReusesExistingIDForKnownURL(t *testing.T) {
+	const (
+		knownURL = "https://pg-batch-known.example.com/"
+		freshURL = "https://pg-batch-fresh.example.com/"
+	)
+
+	ctx := t.Context()
+	pool := newTestPool(t)
+	repo := repository.NewPostgresRepository(pool)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM short_urls WHERE original_url IN ($1, $2)`, knownURL, freshURL)
+	})
+
+	knownID, err := repo.Save(ctx, "pgReuse1", knownURL)
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	stored, err := repo.SaveBatch(ctx, []repository.URLRecord{
+		{ID: "pgReuse2", OriginalURL: freshURL},
+		{ID: "pgReuse3", OriginalURL: knownURL},
+	})
+	if err != nil {
+		t.Fatalf("SaveBatch failed: %v", err)
+	}
+
+	if len(stored) != 2 {
+		t.Fatalf("SaveBatch returned %d records, want 2", len(stored))
+	}
+	if stored[0].ID != "pgReuse2" {
+		t.Errorf("fresh record id = %q, want %q", stored[0].ID, "pgReuse2")
+	}
+	if stored[1].ID != knownID {
+		t.Errorf("known URL got id %q, want the already stored %q", stored[1].ID, knownID)
+	}
+
+	if _, ok := repo.Get(ctx, "pgReuse3"); ok {
+		t.Error("a second id was stored for an already known URL")
+	}
+}
+
+// The unique index must survive a migration run over a table that already
+// holds duplicate URLs.
+func TestMigrate_DeduplicatesExistingURLs(t *testing.T) {
+	const originalURL = "https://pg-dedup.example.com/"
+
+	ctx := t.Context()
+	pool := newTestPool(t)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM short_urls WHERE original_url = $1`, originalURL)
+	})
+
+	var count int
+	err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM short_urls WHERE original_url = $1`, originalURL).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("found %d leftover rows for the test URL, want 0", count)
+	}
+
+	if _, err := repository.NewPostgresRepository(pool).Save(ctx, "pgDedup1", originalURL); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO short_urls (short_id, original_url) VALUES ($1, $2)`, "pgDedup2", originalURL)
+	if err == nil {
+		t.Fatal("a duplicate original_url was accepted, the unique index is missing")
 	}
 }
 

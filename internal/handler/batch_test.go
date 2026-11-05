@@ -152,13 +152,13 @@ func TestURLHandler_ShortenBatch_SavedURLsAreRedirectable(t *testing.T) {
 func TestURLHandler_ShortenBatch_SavesInOneCall(t *testing.T) {
 	var batches [][]repository.URLRecord
 	mock := &mockRepository{
-		saveBatchFunc: func(_ context.Context, records []repository.URLRecord) error {
+		saveBatchFunc: func(_ context.Context, records []repository.URLRecord) ([]repository.URLRecord, error) {
 			batches = append(batches, records)
-			return nil
+			return records, nil
 		},
-		saveFunc: func(context.Context, string, string) error {
+		saveFunc: func(_ context.Context, id, _ string) (string, error) {
 			t.Error("ShortenBatch used Save instead of SaveBatch")
-			return nil
+			return id, nil
 		},
 	}
 
@@ -189,8 +189,8 @@ func TestURLHandler_ShortenBatch_SavesInOneCall(t *testing.T) {
 
 func TestURLHandler_ShortenBatch_ReturnsInternalErrorWhenIDsExhausted(t *testing.T) {
 	mock := &mockRepository{
-		saveBatchFunc: func(context.Context, []repository.URLRecord) error {
-			return repository.ErrIDConflict
+		saveBatchFunc: func(context.Context, []repository.URLRecord) ([]repository.URLRecord, error) {
+			return nil, repository.ErrIDConflict
 		},
 	}
 
