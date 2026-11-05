@@ -12,7 +12,7 @@ import (
 const (
 	defaultAddress         = "localhost:8080"
 	defaultBaseURL         = "http://localhost:8080"
-	defaultFileStoragePath = "/tmp/short-url-db.json"
+	defaultFileStoragePath = ""
 	defaultDatabaseDSN     = ""
 )
 

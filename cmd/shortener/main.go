@@ -37,7 +37,17 @@ func run() error {
 
 	cfg := config.New()
 
-	repo, err := newRepository(cfg.Storage)
+	db, err := database.New(ctx, cfg.Database)
+	if err != nil && !errors.Is(err, database.ErrNotConfigured) {
+		return fmt.Errorf("failed to init database connection: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close database connection")
+		}
+	}()
+
+	repo, err := newRepository(db, cfg.Storage)
 	if err != nil {
 		return fmt.Errorf("failed to init repository: %w", err)
 	}
@@ -48,17 +58,6 @@ func run() error {
 			}
 		}()
 	}
-
-	db, err := database.New(ctx, cfg.Database)
-	if err != nil {
-		// The service stays up without a database: GET /ping reports the failure.
-		log.Error().Err(err).Msg("Failed to init database connection")
-	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Error().Err(err).Msg("Failed to close database connection")
-		}
-	}()
 
 	h := handler.NewURLHandler(repo, cfg.Handler)
 	ping := handler.NewPingHandler(db)
@@ -88,13 +87,24 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRepository(cfg config.StorageConfig) (handler.URLRepository, error) {
-	if cfg.FileStoragePath == "" {
-		log.Info().Msg("File storage path is empty, using in-memory storage")
-		return repository.NewMemoryRepository(), nil
+func newRepository(db *database.DB, cfg config.StorageConfig) (handler.URLRepository, error) {
+	if pool := db.Pool(); pool != nil {
+		log.Info().Msg("Using database storage")
+
+		if err := db.Migrate(); err != nil {
+			return nil, fmt.Errorf("failed to apply migrations: %w", err)
+		}
+
+		return repository.NewPostgresRepository(pool), nil
 	}
 
-	log.Info().Str("fileStoragePath", cfg.FileStoragePath).Msg("Using file storage")
+	if cfg.FileStoragePath != "" {
+		log.Info().Str("fileStoragePath", cfg.FileStoragePath).Msg("Using file storage")
 
-	return repository.NewFileRepository(cfg.FileStoragePath)
+		return repository.NewFileRepository(cfg.FileStoragePath)
+	}
+
+	log.Info().Msg("Neither database DSN nor file storage path is set, using in-memory storage")
+
+	return repository.NewMemoryRepository(), nil
 }

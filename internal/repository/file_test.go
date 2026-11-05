@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -63,10 +64,10 @@ func TestFileRepository_WritesExpectedFormat(t *testing.T) {
 	path := newRepoPath(t)
 	repo := mustNewFileRepository(t, path)
 
-	if err := repo.Save("4rSPg8ap", yandexURL); err != nil {
+	if err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
-	if err := repo.Save("dG56Hqxm", practicumURL); err != nil {
+	if err := repo.Save(context.Background(), "dG56Hqxm", practicumURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -91,7 +92,7 @@ func TestFileRepository_RestoresAfterRestart(t *testing.T) {
 	path := newRepoPath(t)
 
 	first := mustNewFileRepository(t, path)
-	if err := first.Save("4rSPg8ap", yandexURL); err != nil {
+	if err := first.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	if err := first.Close(); err != nil {
@@ -100,7 +101,7 @@ func TestFileRepository_RestoresAfterRestart(t *testing.T) {
 
 	restarted := mustNewFileRepository(t, path)
 
-	originalURL, ok := restarted.Get("4rSPg8ap")
+	originalURL, ok := restarted.Get(context.Background(), "4rSPg8ap")
 	if !ok {
 		t.Fatal("Get returned ok = false, want the URL restored from file")
 	}
@@ -113,7 +114,7 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 	path := newRepoPath(t)
 
 	first := mustNewFileRepository(t, path)
-	if err := first.Save("4rSPg8ap", yandexURL); err != nil {
+	if err := first.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	if err := first.Close(); err != nil {
@@ -121,7 +122,7 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 	}
 
 	restarted := mustNewFileRepository(t, path)
-	if err := restarted.Save("dG56Hqxm", practicumURL); err != nil {
+	if err := restarted.Save(context.Background(), "dG56Hqxm", practicumURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -138,11 +139,11 @@ func TestFileRepository_ContinuesUUIDsAfterRestart(t *testing.T) {
 func TestFileRepository_ReturnsConflictOnDuplicateID(t *testing.T) {
 	repo := mustNewFileRepository(t, newRepoPath(t))
 
-	if err := repo.Save("4rSPg8ap", yandexURL); err != nil {
+	if err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	err := repo.Save("4rSPg8ap", practicumURL)
+	err := repo.Save(context.Background(), "4rSPg8ap", practicumURL)
 	if !errors.Is(err, ErrIDConflict) {
 		t.Fatalf("Save error = %v, want %v", err, ErrIDConflict)
 	}
@@ -151,7 +152,7 @@ func TestFileRepository_ReturnsConflictOnDuplicateID(t *testing.T) {
 func TestFileRepository_StartsEmptyWhenFileMissing(t *testing.T) {
 	repo := mustNewFileRepository(t, newRepoPath(t))
 
-	if _, ok := repo.Get("4rSPg8ap"); ok {
+	if _, ok := repo.Get(context.Background(), "4rSPg8ap"); ok {
 		t.Error("Get returned ok = true on a fresh repository, want false")
 	}
 }
@@ -164,7 +165,7 @@ func TestFileRepository_StartsEmptyWhenFileIsEmpty(t *testing.T) {
 
 	repo := mustNewFileRepository(t, path)
 
-	if _, ok := repo.Get("4rSPg8ap"); ok {
+	if _, ok := repo.Get(context.Background(), "4rSPg8ap"); ok {
 		t.Error("Get returned ok = true on an empty storage file, want false")
 	}
 }
@@ -187,7 +188,7 @@ func TestFileRepository_RejectsSaveAfterClose(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	err := repo.Save("4rSPg8ap", yandexURL)
+	err := repo.Save(context.Background(), "4rSPg8ap", yandexURL)
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("Save error = %v, want %v", err, ErrClosed)
 	}
@@ -197,7 +198,7 @@ func TestFileRepository_KeepsRecordsWrittenBeforeClose(t *testing.T) {
 	path := newRepoPath(t)
 	repo := mustNewFileRepository(t, path)
 
-	if err := repo.Save("4rSPg8ap", yandexURL); err != nil {
+	if err := repo.Save(context.Background(), "4rSPg8ap", yandexURL); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	if err := repo.Close(); err != nil {

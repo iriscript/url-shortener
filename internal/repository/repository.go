@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -19,7 +20,7 @@ func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{m: make(map[string]string)}
 }
 
-func (r *MemoryRepository) Save(id, originalURL string) error {
+func (r *MemoryRepository) Save(_ context.Context, id, originalURL string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -31,7 +32,7 @@ func (r *MemoryRepository) Save(id, originalURL string) error {
 	return nil
 }
 
-func (r *MemoryRepository) Get(id string) (string, bool) {
+func (r *MemoryRepository) Get(_ context.Context, id string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	originalURL, ok := r.m[id]

@@ -27,8 +27,8 @@ func newTestPingServer(t *testing.T, pinger handler.Pinger) *httptest.Server {
 	t.Helper()
 
 	repo := &mockRepository{
-		saveFunc: func(string, string) error { return nil },
-		getFunc:  func(string) (string, bool) { return "", false },
+		saveFunc: func(context.Context, string, string) error { return nil },
+		getFunc:  func(context.Context, string) (string, bool) { return "", false },
 	}
 
 	rout := router.NewRouter(

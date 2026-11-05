@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,8 +27,8 @@ const (
 )
 
 type URLRepository interface {
-	Save(id, originalURL string) error
-	Get(id string) (originalURL string, ok bool)
+	Save(ctx context.Context, id, originalURL string) error
+	Get(ctx context.Context, id string) (originalURL string, ok bool)
 }
 
 type URLHandler struct {
@@ -46,7 +47,7 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 		return
 	}
 
-	shortURL, err := h.shortenURL(string(body))
+	shortURL, err := h.shortenURL(c.Request.Context(), string(body))
 	if err != nil {
 		log.Error().Err(err).Msg("shorten: failed to shorten url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
@@ -69,7 +70,7 @@ func (h *URLHandler) ShortenJSON(c *gin.Context) {
 		return
 	}
 
-	shortURL, err := h.shortenURL(request.URL)
+	shortURL, err := h.shortenURL(c.Request.Context(), request.URL)
 	if err != nil {
 		log.Error().Err(err).Msg("shortenJSON: failed to shorten url")
 		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
@@ -93,7 +94,7 @@ func writeJSON(c *gin.Context, status int, response any) {
 func (h *URLHandler) Redirect(c *gin.Context) {
 	id := c.Param("id")
 
-	originalURL, ok := h.repo.Get(id)
+	originalURL, ok := h.repo.Get(c.Request.Context(), id)
 	if !ok {
 		c.String(http.StatusBadRequest, "unknown short URL id")
 		return
@@ -103,8 +104,8 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 	c.Status(http.StatusTemporaryRedirect)
 }
 
-func (h *URLHandler) shortenURL(originalURL string) (string, error) {
-	id, err := h.save(originalURL)
+func (h *URLHandler) shortenURL(ctx context.Context, originalURL string) (string, error) {
+	id, err := h.save(ctx, originalURL)
 	if err != nil {
 		return "", err
 	}
@@ -112,11 +113,11 @@ func (h *URLHandler) shortenURL(originalURL string) (string, error) {
 	return url.JoinPath(h.baseURL, id)
 }
 
-func (h *URLHandler) save(originalURL string) (string, error) {
+func (h *URLHandler) save(ctx context.Context, originalURL string) (string, error) {
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
 		id := generateID()
 
-		err := h.repo.Save(id, originalURL)
+		err := h.repo.Save(ctx, id, originalURL)
 		if err == nil {
 			return id, nil
 		}

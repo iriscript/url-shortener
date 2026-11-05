@@ -14,6 +14,7 @@ var ErrNotConfigured = errors.New("database is not configured")
 
 type DB struct {
 	pool *pgxpool.Pool
+	dsn  string
 }
 
 func New(ctx context.Context, cfg config.DatabaseConfig) (*DB, error) {
@@ -26,7 +27,15 @@ func New(ctx context.Context, cfg config.DatabaseConfig) (*DB, error) {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	return &DB{pool: pool}, nil
+	return &DB{pool: pool, dsn: cfg.DSN}, nil
+}
+
+func (db *DB) Pool() *pgxpool.Pool {
+	if db == nil {
+		return nil
+	}
+
+	return db.pool
 }
 
 func (db *DB) Ping(ctx context.Context) error {
