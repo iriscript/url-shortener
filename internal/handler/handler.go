@@ -28,6 +28,7 @@ const (
 
 type URLRepository interface {
 	Save(ctx context.Context, id, originalURL string) error
+	SaveBatch(ctx context.Context, records []repository.URLRecord) error
 	Get(ctx context.Context, id string) (originalURL string, ok bool)
 }
 
@@ -78,6 +79,68 @@ func (h *URLHandler) ShortenJSON(c *gin.Context) {
 	}
 
 	writeJSON(c, http.StatusCreated, model.ShortenResponse{Result: shortURL})
+}
+
+func (h *URLHandler) ShortenBatch(c *gin.Context) {
+	var request []model.BatchRequestItem
+	if err := json.NewDecoder(c.Request.Body).Decode(&request); err != nil {
+		log.Warn().Err(err).Msg("shortenBatch: failed to decode request body")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if len(request) == 0 {
+		log.Warn().Msg("shortenBatch: batch is empty")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "batch is empty"})
+		return
+	}
+	for _, item := range request {
+		if item.OriginalURL == "" {
+			log.Warn().Str("correlationID", item.CorrelationID).Msg("shortenBatch: url is empty")
+			writeJSON(c, http.StatusBadRequest, gin.H{"error": "url is empty"})
+			return
+		}
+	}
+
+	response, err := h.shortenBatch(c.Request.Context(), request)
+	if err != nil {
+		log.Error().Err(err).Msg("shortenBatch: failed to shorten the batch")
+		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+		return
+	}
+
+	writeJSON(c, http.StatusCreated, response)
+}
+
+func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequestItem) ([]model.BatchResponseItem, error) {
+	records := make([]repository.URLRecord, len(request))
+
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		for i, item := range request {
+			records[i] = repository.URLRecord{ID: generateID(), OriginalURL: item.OriginalURL}
+		}
+
+		err := h.repo.SaveBatch(ctx, records)
+		if errors.Is(err, repository.ErrIDConflict) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to save the URL batch: %w", err)
+		}
+
+		response := make([]model.BatchResponseItem, len(request))
+		for i, item := range request {
+			shortURL, err := url.JoinPath(h.baseURL, records[i].ID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build the short URL: %w", err)
+			}
+
+			response[i] = model.BatchResponseItem{CorrelationID: item.CorrelationID, ShortURL: shortURL}
+		}
+
+		return response, nil
+	}
+
+	return nil, repository.ErrIDConflict
 }
 
 func writeJSON(c *gin.Context, status int, response any) {

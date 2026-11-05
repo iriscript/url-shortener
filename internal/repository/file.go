@@ -91,6 +91,34 @@ func (r *FileRepository) Save(_ context.Context, id, originalURL string) error {
 		return ErrIDConflict
 	}
 
+	return r.store(id, originalURL)
+}
+
+func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	seen := make(map[string]struct{}, len(records))
+	for _, rec := range records {
+		if _, exists := r.index[rec.ID]; exists {
+			return ErrIDConflict
+		}
+		if _, duplicate := seen[rec.ID]; duplicate {
+			return ErrIDConflict
+		}
+		seen[rec.ID] = struct{}{}
+	}
+
+	for _, rec := range records {
+		if err := r.store(rec.ID, rec.OriginalURL); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *FileRepository) store(id, originalURL string) error {
 	rec := record{
 		UUID:        strconv.Itoa(r.count + 1),
 		ShortURL:    id,

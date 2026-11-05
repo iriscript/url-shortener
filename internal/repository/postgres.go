@@ -36,6 +36,30 @@ func (r *PostgresRepository) Save(ctx context.Context, id, originalURL string) e
 	return nil
 }
 
+func (r *PostgresRepository) SaveBatch(ctx context.Context, records []URLRecord) error {
+	const query = `INSERT INTO short_urls (short_id, original_url)
+		SELECT unnest($1::text[]), unnest($2::text[])`
+
+	ids := make([]string, len(records))
+	originalURLs := make([]string, len(records))
+	for i, rec := range records {
+		ids[i] = rec.ID
+		originalURLs[i] = rec.OriginalURL
+	}
+
+	_, err := r.pool.Exec(ctx, query, ids, originalURLs)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
+			return ErrIDConflict
+		}
+
+		return fmt.Errorf("failed to insert the URL batch: %w", err)
+	}
+
+	return nil
+}
+
 func (r *PostgresRepository) Get(ctx context.Context, id string) (string, bool) {
 	const query = `SELECT original_url FROM short_urls WHERE short_id = $1`
 

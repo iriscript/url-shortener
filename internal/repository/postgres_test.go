@@ -93,6 +93,63 @@ func TestPostgresRepository_SaveReturnsIDConflict(t *testing.T) {
 	}
 }
 
+func TestPostgresRepository_SaveBatch(t *testing.T) {
+	records := []repository.URLRecord{
+		{ID: "pgBatch1", OriginalURL: "https://practicum.yandex.ru/"},
+		{ID: "pgBatch2", OriginalURL: "https://ya.ru/"},
+	}
+
+	ctx := t.Context()
+	pool := newTestPool(t)
+	repo := repository.NewPostgresRepository(pool)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM short_urls WHERE short_id LIKE 'pgBatch%'`)
+	})
+
+	if err := repo.SaveBatch(ctx, records); err != nil {
+		t.Fatalf("SaveBatch failed: %v", err)
+	}
+
+	for _, rec := range records {
+		got, ok := repo.Get(ctx, rec.ID)
+		if !ok {
+			t.Fatalf("Get(%q) found nothing", rec.ID)
+		}
+		if got != rec.OriginalURL {
+			t.Errorf("Get(%q) = %q, want %q", rec.ID, got, rec.OriginalURL)
+		}
+	}
+}
+
+func TestPostgresRepository_SaveBatchIsAtomicOnConflict(t *testing.T) {
+	ctx := t.Context()
+	pool := newTestPool(t)
+	repo := repository.NewPostgresRepository(pool)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM short_urls WHERE short_id LIKE 'pgAtomic%'`)
+	})
+
+	if err := repo.Save(ctx, "pgAtomic1", "https://practicum.yandex.ru/"); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	err := repo.SaveBatch(ctx, []repository.URLRecord{
+		{ID: "pgAtomic2", OriginalURL: "https://ya.ru/"},
+		{ID: "pgAtomic1", OriginalURL: "https://go.dev/"},
+	})
+	if !errors.Is(err, repository.ErrIDConflict) {
+		t.Fatalf("SaveBatch error = %v, want %v", err, repository.ErrIDConflict)
+	}
+
+	if _, ok := repo.Get(ctx, "pgAtomic2"); ok {
+		t.Error("a record from the rejected batch was stored")
+	}
+}
+
 func TestPostgresRepository_GetUnknownID(t *testing.T) {
 	ctx := t.Context()
 	repo := repository.NewPostgresRepository(newTestPool(t))

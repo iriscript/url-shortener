@@ -25,14 +25,31 @@ const baseURL = "http://localhost:8080"
 var shortURLPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(baseURL) + `/[a-zA-Z0-9]{8}$`)
 
 type mockRepository struct {
-	saveFunc func(ctx context.Context, id, originalURL string) error
-	getFunc  func(ctx context.Context, id string) (string, bool)
+	saveFunc      func(ctx context.Context, id, originalURL string) error
+	saveBatchFunc func(ctx context.Context, records []repository.URLRecord) error
+	getFunc       func(ctx context.Context, id string) (string, bool)
 }
 
 var _ handler.URLRepository = (*mockRepository)(nil)
 
 func (m *mockRepository) Save(ctx context.Context, id, originalURL string) error {
 	return m.saveFunc(ctx, id, originalURL)
+}
+
+// SaveBatch falls back to repeated Save calls so that tests which only set
+// saveFunc keep working.
+func (m *mockRepository) SaveBatch(ctx context.Context, records []repository.URLRecord) error {
+	if m.saveBatchFunc != nil {
+		return m.saveBatchFunc(ctx, records)
+	}
+
+	for _, rec := range records {
+		if err := m.saveFunc(ctx, rec.ID, rec.OriginalURL); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (m *mockRepository) Get(ctx context.Context, id string) (string, bool) {
