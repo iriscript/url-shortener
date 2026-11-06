@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/repository"
+	"github.com/iriscript/url-shortener/internal/router/middleware"
 )
 
 const (
@@ -26,8 +28,10 @@ const (
 )
 
 type URLRepository interface {
-	Save(id, originalURL string) error
-	Get(id string) (originalURL string, ok bool)
+	Save(ctx context.Context, record repository.URLRecord) (storedID string, err error)
+	SaveBatch(ctx context.Context, records []repository.URLRecord) (stored []repository.URLRecord, err error)
+	Get(ctx context.Context, id string) (originalURL string, ok bool)
+	GetByUser(ctx context.Context, userID string) (records []repository.URLRecord, err error)
 }
 
 type URLHandler struct {
@@ -46,14 +50,21 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 		return
 	}
 
-	shortURL, err := h.shortenURL(string(body))
+	userID, _ := middleware.UserID(c)
+
+	shortURL, existed, err := h.shortenURL(c.Request.Context(), string(body), userID)
 	if err != nil {
 		log.Error().Err(err).Msg("shorten: failed to shorten url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}
 
-	c.Data(http.StatusCreated, "text/plain", []byte(shortURL))
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusConflict
+	}
+
+	c.Data(status, "text/plain", []byte(shortURL))
 }
 
 func (h *URLHandler) ShortenJSON(c *gin.Context) {
@@ -69,14 +80,96 @@ func (h *URLHandler) ShortenJSON(c *gin.Context) {
 		return
 	}
 
-	shortURL, err := h.shortenURL(request.URL)
+	userID, _ := middleware.UserID(c)
+
+	shortURL, existed, err := h.shortenURL(c.Request.Context(), request.URL, userID)
 	if err != nil {
 		log.Error().Err(err).Msg("shortenJSON: failed to shorten url")
 		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
 		return
 	}
 
-	writeJSON(c, http.StatusCreated, model.ShortenResponse{Result: shortURL})
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusConflict
+	}
+
+	writeJSON(c, status, model.ShortenResponse{Result: shortURL})
+}
+
+func (h *URLHandler) ShortenBatch(c *gin.Context) {
+	var request []model.BatchRequestItem
+	if err := json.NewDecoder(c.Request.Body).Decode(&request); err != nil {
+		log.Warn().Err(err).Msg("shortenBatch: failed to decode request body")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if len(request) == 0 {
+		log.Warn().Msg("shortenBatch: batch is empty")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "batch is empty"})
+		return
+	}
+	for _, item := range request {
+		if item.OriginalURL == "" {
+			log.Warn().Str("correlationID", item.CorrelationID).Msg("shortenBatch: url is empty")
+			writeJSON(c, http.StatusBadRequest, gin.H{"error": "url is empty"})
+			return
+		}
+	}
+
+	userID, _ := middleware.UserID(c)
+
+	response, err := h.shortenBatch(c.Request.Context(), request, userID)
+	if err != nil {
+		log.Error().Err(err).Msg("shortenBatch: failed to shorten the batch")
+		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+		return
+	}
+
+	writeJSON(c, http.StatusCreated, response)
+}
+
+func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequestItem, userID string) ([]model.BatchResponseItem, error) {
+	uniqueURLs := make([]string, 0, len(request))
+	positions := make(map[string]int, len(request))
+	for _, item := range request {
+		if _, seen := positions[item.OriginalURL]; seen {
+			continue
+		}
+
+		positions[item.OriginalURL] = len(uniqueURLs)
+		uniqueURLs = append(uniqueURLs, item.OriginalURL)
+	}
+
+	records := make([]repository.URLRecord, len(uniqueURLs))
+
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		for i, originalURL := range uniqueURLs {
+			records[i] = repository.URLRecord{ID: generateID(), OriginalURL: originalURL, UserID: userID}
+		}
+
+		stored, err := h.repo.SaveBatch(ctx, records)
+		if errors.Is(err, repository.ErrIDConflict) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to save the URL batch: %w", err)
+		}
+
+		response := make([]model.BatchResponseItem, len(request))
+		for i, item := range request {
+			shortURL, err := url.JoinPath(h.baseURL, stored[positions[item.OriginalURL]].ID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build the short URL: %w", err)
+			}
+
+			response[i] = model.BatchResponseItem{CorrelationID: item.CorrelationID, ShortURL: shortURL}
+		}
+
+		return response, nil
+	}
+
+	return nil, repository.ErrIDConflict
 }
 
 func writeJSON(c *gin.Context, status int, response any) {
@@ -93,7 +186,7 @@ func writeJSON(c *gin.Context, status int, response any) {
 func (h *URLHandler) Redirect(c *gin.Context) {
 	id := c.Param("id")
 
-	originalURL, ok := h.repo.Get(id)
+	originalURL, ok := h.repo.Get(c.Request.Context(), id)
 	if !ok {
 		c.String(http.StatusBadRequest, "unknown short URL id")
 		return
@@ -103,29 +196,71 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 	c.Status(http.StatusTemporaryRedirect)
 }
 
-func (h *URLHandler) shortenURL(originalURL string) (string, error) {
-	id, err := h.save(originalURL)
-	if err != nil {
-		return "", err
+func (h *URLHandler) UserURLs(c *gin.Context) {
+	userID, authenticated := middleware.UserID(c)
+	if !authenticated {
+		log.Warn().Msg("userURLs: request carries no authentic user id")
+		writeJSON(c, http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
 	}
 
-	return url.JoinPath(h.baseURL, id)
+	records, err := h.repo.GetByUser(c.Request.Context(), userID)
+	if err != nil {
+		log.Error().Err(err).Msg("userURLs: failed to select the user urls")
+		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+		return
+	}
+	if len(records) == 0 {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	response := make([]model.UserURLItem, len(records))
+	for i, rec := range records {
+		shortURL, err := url.JoinPath(h.baseURL, rec.ID)
+		if err != nil {
+			log.Error().Err(err).Msg("userURLs: failed to build the short URL")
+			writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+			return
+		}
+
+		response[i] = model.UserURLItem{ShortURL: shortURL, OriginalURL: rec.OriginalURL}
+	}
+
+	writeJSON(c, http.StatusOK, response)
 }
 
-func (h *URLHandler) save(originalURL string) (string, error) {
-	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
-		id := generateID()
+func (h *URLHandler) shortenURL(ctx context.Context, originalURL, userID string) (string, bool, error) {
+	id, existed, err := h.save(ctx, originalURL, userID)
+	if err != nil {
+		return "", false, err
+	}
 
-		err := h.repo.Save(id, originalURL)
+	shortURL, err := url.JoinPath(h.baseURL, id)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to build the short URL: %w", err)
+	}
+
+	return shortURL, existed, nil
+}
+
+func (h *URLHandler) save(ctx context.Context, originalURL, userID string) (string, bool, error) {
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		rec := repository.URLRecord{ID: generateID(), OriginalURL: originalURL, UserID: userID}
+
+		storedID, err := h.repo.Save(ctx, rec)
 		if err == nil {
-			return id, nil
+			return storedID, false, nil
+		}
+		if errors.Is(err, repository.ErrURLConflict) {
+			return storedID, true, nil
 		}
 		if !errors.Is(err, repository.ErrIDConflict) {
-			return "", fmt.Errorf("failed to save the URL: %w", err)
+			return "", false, fmt.Errorf("failed to save the URL: %w", err)
 		}
 	}
 
-	return "", repository.ErrIDConflict
+	return "", false, repository.ErrIDConflict
 }
 
 func generateID() string {

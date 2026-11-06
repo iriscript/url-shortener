@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,11 +21,14 @@ type record struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
+	UserID      string `json:"user_id,omitempty"`
 }
 
 type FileRepository struct {
 	mu      sync.Mutex
 	index   map[string]string
+	byURL   map[string]string
+	byUser  map[string][]string
 	count   int
 	path    string
 	file    *os.File
@@ -37,8 +41,10 @@ func NewFileRepository(path string) (*FileRepository, error) {
 	}
 
 	r := &FileRepository{
-		index: make(map[string]string),
-		path:  path,
+		index:  make(map[string]string),
+		byURL:  make(map[string]string),
+		byUser: make(map[string][]string),
+		path:   path,
 	}
 
 	if err := r.load(); err != nil {
@@ -77,40 +83,107 @@ func (r *FileRepository) load() error {
 			return fmt.Errorf("failed to parse storage file: %w", err)
 		}
 
-		r.index[rec.ShortURL] = rec.OriginalURL
+		r.indexRecord(rec)
 		r.count++
 	}
 }
 
-func (r *FileRepository) Save(id, originalURL string) error {
+func (r *FileRepository) Save(_ context.Context, rec URLRecord) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.index[id]; exists {
-		return ErrIDConflict
+	if existingID, exists := r.byURL[rec.OriginalURL]; exists {
+		return existingID, ErrURLConflict
+	}
+	if _, exists := r.index[rec.ID]; exists {
+		return "", ErrIDConflict
 	}
 
-	rec := record{
+	if err := r.store(rec); err != nil {
+		return "", err
+	}
+
+	return rec.ID, nil
+}
+
+func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) ([]URLRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	stored := make([]URLRecord, len(records))
+	fresh := make([]int, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+
+	for i, rec := range records {
+		if existingID, exists := r.byURL[rec.OriginalURL]; exists {
+			stored[i] = URLRecord{ID: existingID, OriginalURL: rec.OriginalURL, UserID: rec.UserID}
+			continue
+		}
+		if _, exists := r.index[rec.ID]; exists {
+			return nil, ErrIDConflict
+		}
+		if _, duplicate := seen[rec.ID]; duplicate {
+			return nil, ErrIDConflict
+		}
+
+		seen[rec.ID] = struct{}{}
+		stored[i] = rec
+		fresh = append(fresh, i)
+	}
+
+	for _, i := range fresh {
+		if err := r.store(stored[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	return stored, nil
+}
+
+func (r *FileRepository) store(rec URLRecord) error {
+	line := record{
 		UUID:        strconv.Itoa(r.count + 1),
-		ShortURL:    id,
-		OriginalURL: originalURL,
+		ShortURL:    rec.ID,
+		OriginalURL: rec.OriginalURL,
+		UserID:      rec.UserID,
 	}
 
-	if err := r.append(rec); err != nil {
+	if err := r.append(line); err != nil {
 		return err
 	}
 
-	r.index[id] = originalURL
+	r.indexRecord(line)
 	r.count++
 
 	return nil
 }
 
-func (r *FileRepository) Get(id string) (string, bool) {
+func (r *FileRepository) indexRecord(rec record) {
+	r.index[rec.ShortURL] = rec.OriginalURL
+	r.byURL[rec.OriginalURL] = rec.ShortURL
+	if rec.UserID != "" {
+		r.byUser[rec.UserID] = append(r.byUser[rec.UserID], rec.ShortURL)
+	}
+}
+
+func (r *FileRepository) Get(_ context.Context, id string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	originalURL, ok := r.index[id]
 	return originalURL, ok
+}
+
+func (r *FileRepository) GetByUser(_ context.Context, userID string) ([]URLRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ids := r.byUser[userID]
+	records := make([]URLRecord, 0, len(ids))
+	for _, id := range ids {
+		records = append(records, URLRecord{ID: id, OriginalURL: r.index[id], UserID: userID})
+	}
+
+	return records, nil
 }
 
 func (r *FileRepository) append(rec record) error {

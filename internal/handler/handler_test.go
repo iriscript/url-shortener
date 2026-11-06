@@ -3,6 +3,7 @@ package handler_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,29 +20,66 @@ import (
 	"github.com/iriscript/url-shortener/internal/repository"
 )
 
-const baseURL = "http://localhost:8080"
+const (
+	baseURL    = "http://localhost:8080"
+	testSecret = "test-secret"
+)
 
 var shortURLPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(baseURL) + `/[a-zA-Z0-9]{8}$`)
 
 type mockRepository struct {
-	saveFunc func(id, originalURL string) error
-	getFunc  func(id string) (string, bool)
+	saveFunc      func(ctx context.Context, rec repository.URLRecord) (string, error)
+	saveBatchFunc func(ctx context.Context, records []repository.URLRecord) ([]repository.URLRecord, error)
+	getFunc       func(ctx context.Context, id string) (string, bool)
+	getByUserFunc func(ctx context.Context, userID string) ([]repository.URLRecord, error)
 }
 
 var _ handler.URLRepository = (*mockRepository)(nil)
 
-func (m *mockRepository) Save(id, originalURL string) error {
-	return m.saveFunc(id, originalURL)
+func (m *mockRepository) Save(ctx context.Context, rec repository.URLRecord) (string, error) {
+	return m.saveFunc(ctx, rec)
 }
 
-func (m *mockRepository) Get(id string) (string, bool) {
-	return m.getFunc(id)
+// SaveBatch falls back to repeated Save calls so that tests which only set
+// saveFunc keep working.
+func (m *mockRepository) SaveBatch(ctx context.Context, records []repository.URLRecord) ([]repository.URLRecord, error) {
+	if m.saveBatchFunc != nil {
+		return m.saveBatchFunc(ctx, records)
+	}
+
+	stored := make([]repository.URLRecord, len(records))
+	for i, rec := range records {
+		id, err := m.saveFunc(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
+
+		stored[i] = repository.URLRecord{ID: id, OriginalURL: rec.OriginalURL, UserID: rec.UserID}
+	}
+
+	return stored, nil
+}
+
+func (m *mockRepository) Get(ctx context.Context, id string) (string, bool) {
+	return m.getFunc(ctx, id)
+}
+
+func (m *mockRepository) GetByUser(ctx context.Context, userID string) ([]repository.URLRecord, error) {
+	if m.getByUserFunc == nil {
+		return nil, nil
+	}
+
+	return m.getByUserFunc(ctx, userID)
 }
 
 func newTestHTTPServer(t *testing.T, repo handler.URLRepository) *httptest.Server {
 	t.Helper()
 
-	rout := router.NewRouter(handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}))
+	rout := router.NewRouter(
+		handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}),
+		handler.NewPingHandler(&mockPinger{pingFunc: func(context.Context) error { return nil }}),
+		config.AuthConfig{SecretKey: testSecret},
+	)
 	ts := httptest.NewServer(rout)
 	t.Cleanup(ts.Close)
 
@@ -51,8 +89,10 @@ func newTestHTTPServer(t *testing.T, repo handler.URLRepository) *httptest.Serve
 func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
 	t.Helper()
 
-	ts := newTestHTTPServer(t, repo)
+	return newTestClient(newTestHTTPServer(t, repo))
+}
 
+func newTestClient(ts *httptest.Server) *resty.Client {
 	return resty.New().
 		SetBaseURL(ts.URL).
 		SetRedirectPolicy(resty.RedirectPolicyFunc(func(req *http.Request, via []*http.Request) error {
@@ -115,10 +155,10 @@ func TestURLHandler_Shorten_UsesRepository(t *testing.T) {
 
 	var gotSavedID, gotSavedURL string
 	mock := &mockRepository{
-		saveFunc: func(id, url string) error {
-			gotSavedID = id
-			gotSavedURL = url
-			return nil
+		saveFunc: func(_ context.Context, rec repository.URLRecord) (string, error) {
+			gotSavedID = rec.ID
+			gotSavedURL = rec.OriginalURL
+			return rec.ID, nil
 		},
 	}
 
@@ -150,8 +190,8 @@ func TestURLHandler_Shorten_ReturnsInternalErrorWhenIDsExhausted(t *testing.T) {
 	const originalURL = "https://practicum.yandex.ru/"
 
 	mock := &mockRepository{
-		saveFunc: func(id, url string) error {
-			return repository.ErrIDConflict
+		saveFunc: func(_ context.Context, _ repository.URLRecord) (string, error) {
+			return "", repository.ErrIDConflict
 		},
 	}
 
@@ -239,10 +279,10 @@ func TestURLHandler_ShortenJSON_UsesRepository(t *testing.T) {
 
 	var gotSavedID, gotSavedURL string
 	mock := &mockRepository{
-		saveFunc: func(id, url string) error {
-			gotSavedID = id
-			gotSavedURL = url
-			return nil
+		saveFunc: func(_ context.Context, rec repository.URLRecord) (string, error) {
+			gotSavedID = rec.ID
+			gotSavedURL = rec.OriginalURL
+			return rec.ID, nil
 		},
 	}
 
@@ -279,8 +319,8 @@ func TestURLHandler_ShortenJSON_ReturnsInternalErrorWhenIDsExhausted(t *testing.
 	const originalURL = "https://practicum.yandex.ru/"
 
 	mock := &mockRepository{
-		saveFunc: func(id, url string) error {
-			return repository.ErrIDConflict
+		saveFunc: func(_ context.Context, _ repository.URLRecord) (string, error) {
+			return "", repository.ErrIDConflict
 		},
 	}
 
@@ -325,7 +365,7 @@ func TestURLHandler_Redirect(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := repository.NewMemoryRepository()
-			if err := repo.Save(knownID, originalURL); err != nil {
+			if _, err := repo.Save(context.Background(), repository.URLRecord{ID: knownID, OriginalURL: originalURL}); err != nil {
 				t.Fatalf("repo.Save failed: %v", err)
 			}
 			client := newTestServer(t, repo)
@@ -348,7 +388,7 @@ func TestURLHandler_Redirect(t *testing.T) {
 
 func TestURLHandler_Redirect_UnknownIDNeverHitsRepository(t *testing.T) {
 	mock := &mockRepository{
-		getFunc: func(id string) (string, bool) {
+		getFunc: func(_ context.Context, id string) (string, bool) {
 			return "", false
 		},
 	}

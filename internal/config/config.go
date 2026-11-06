@@ -12,7 +12,9 @@ import (
 const (
 	defaultAddress         = "localhost:8080"
 	defaultBaseURL         = "http://localhost:8080"
-	defaultFileStoragePath = "/tmp/short-url-db.json"
+	defaultFileStoragePath = ""
+	defaultDatabaseDSN     = ""
+	defaultSecretKey       = "url-shortener-dev-secret"
 )
 
 type ServerConfig struct {
@@ -27,10 +29,20 @@ type StorageConfig struct {
 	FileStoragePath string `env:"FILE_STORAGE_PATH"`
 }
 
+type DatabaseConfig struct {
+	DSN string `env:"DATABASE_DSN"`
+}
+
+type AuthConfig struct {
+	SecretKey string `env:"SECRET_KEY"`
+}
+
 type Config struct {
-	Server  ServerConfig
-	Handler HandlerConfig
-	Storage StorageConfig
+	Server   ServerConfig
+	Handler  HandlerConfig
+	Storage  StorageConfig
+	Database DatabaseConfig
+	Auth     AuthConfig
 }
 
 func New() *Config {
@@ -50,12 +62,14 @@ func parse(args []string, environment map[string]string) (*Config, error) {
 
 	envErr := env.ParseWithOptions(&cfg, env.Options{Environment: environment})
 
-	var flagAddr, flagBaseURL, flagFileStoragePath string
+	var flagAddr, flagBaseURL, flagFileStoragePath, flagDatabaseDSN, flagSecretKey string
 
 	fs := flag.NewFlagSet("shortener", flag.ContinueOnError)
 	fs.StringVar(&flagAddr, "a", defaultAddress, "address of the HTTP server")
 	fs.StringVar(&flagBaseURL, "b", defaultBaseURL, "base address of the resulting shortened URL")
 	fs.StringVar(&flagFileStoragePath, "f", defaultFileStoragePath, "path to the file where shortened URLs are stored")
+	fs.StringVar(&flagDatabaseDSN, "d", defaultDatabaseDSN, "PostgreSQL connection string")
+	fs.StringVar(&flagSecretKey, "k", defaultSecretKey, "secret key used to sign the auth cookie")
 	flagErr := fs.Parse(args)
 
 	if cfg.Server.Address == "" {
@@ -66,6 +80,12 @@ func parse(args []string, environment map[string]string) (*Config, error) {
 	}
 	if cfg.Storage.FileStoragePath == "" {
 		cfg.Storage.FileStoragePath = flagFileStoragePath
+	}
+	if cfg.Database.DSN == "" {
+		cfg.Database.DSN = flagDatabaseDSN
+	}
+	if cfg.Auth.SecretKey == "" {
+		cfg.Auth.SecretKey = flagSecretKey
 	}
 
 	if envErr != nil {

@@ -10,6 +10,8 @@ func TestParse_Priority(t *testing.T) {
 		wantAddress string
 		wantBaseURL string
 		wantStorage string
+		wantDSN     string
+		wantSecret  string
 	}{
 		{
 			name:        "defaults when nothing is set",
@@ -18,26 +20,30 @@ func TestParse_Priority(t *testing.T) {
 			wantAddress: defaultAddress,
 			wantBaseURL: defaultBaseURL,
 			wantStorage: defaultFileStoragePath,
+			wantSecret:  defaultSecretKey,
 		},
 		{
 			name:        "flags win over defaults",
-			args:        []string{"-a", "localhost:9090", "-b", "http://localhost:9090", "-f", "/tmp/from-flag.json"},
+			args:        []string{"-a", "localhost:9090", "-b", "http://localhost:9090", "-f", "/tmp/from-flag.json", "-k", "from-flag"},
 			environment: map[string]string{},
 			wantAddress: "localhost:9090",
 			wantBaseURL: "http://localhost:9090",
 			wantStorage: "/tmp/from-flag.json",
+			wantSecret:  "from-flag",
 		},
 		{
 			name: "env wins over flags",
-			args: []string{"-a", "localhost:9090", "-b", "http://localhost:9090", "-f", "/tmp/from-flag.json"},
+			args: []string{"-a", "localhost:9090", "-b", "http://localhost:9090", "-f", "/tmp/from-flag.json", "-k", "from-flag"},
 			environment: map[string]string{
 				"SERVER_ADDRESS":    "localhost:7070",
 				"BASE_URL":          "http://localhost:7070",
 				"FILE_STORAGE_PATH": "/tmp/from-env.json",
+				"SECRET_KEY":        "from-env",
 			},
 			wantAddress: "localhost:7070",
 			wantBaseURL: "http://localhost:7070",
 			wantStorage: "/tmp/from-env.json",
+			wantSecret:  "from-env",
 		},
 		{
 			name: "env wins over defaults when no flags given",
@@ -46,10 +52,12 @@ func TestParse_Priority(t *testing.T) {
 				"SERVER_ADDRESS":    "localhost:7070",
 				"BASE_URL":          "http://localhost:7070",
 				"FILE_STORAGE_PATH": "/tmp/from-env.json",
+				"SECRET_KEY":        "from-env",
 			},
 			wantAddress: "localhost:7070",
 			wantBaseURL: "http://localhost:7070",
 			wantStorage: "/tmp/from-env.json",
+			wantSecret:  "from-env",
 		},
 		{
 			name: "each parameter resolves independently",
@@ -60,6 +68,7 @@ func TestParse_Priority(t *testing.T) {
 			wantAddress: "localhost:7070",
 			wantBaseURL: defaultBaseURL,
 			wantStorage: "/tmp/from-flag.json",
+			wantSecret:  defaultSecretKey,
 		},
 	}
 
@@ -78,6 +87,12 @@ func TestParse_Priority(t *testing.T) {
 			}
 			if cfg.Storage.FileStoragePath != tt.wantStorage {
 				t.Errorf("Storage.FileStoragePath = %q, want %q", cfg.Storage.FileStoragePath, tt.wantStorage)
+			}
+			if cfg.Database.DSN != tt.wantDSN {
+				t.Errorf("Database.DSN = %q, want %q", cfg.Database.DSN, tt.wantDSN)
+			}
+			if cfg.Auth.SecretKey != tt.wantSecret {
+				t.Errorf("Auth.SecretKey = %q, want %q", cfg.Auth.SecretKey, tt.wantSecret)
 			}
 		})
 	}
@@ -98,5 +113,11 @@ func TestParse_ReturnsDefaultsAlongsideError(t *testing.T) {
 	}
 	if cfg.Storage.FileStoragePath != defaultFileStoragePath {
 		t.Errorf("Storage.FileStoragePath = %q, want %q", cfg.Storage.FileStoragePath, defaultFileStoragePath)
+	}
+	if cfg.Database.DSN != defaultDatabaseDSN {
+		t.Errorf("Database.DSN = %q, want %q", cfg.Database.DSN, defaultDatabaseDSN)
+	}
+	if cfg.Auth.SecretKey != defaultSecretKey {
+		t.Errorf("Auth.SecretKey = %q, want %q", cfg.Auth.SecretKey, defaultSecretKey)
 	}
 }
