@@ -27,7 +27,7 @@ var shortURLPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(baseURL) + `/[a-
 type mockRepository struct {
 	saveFunc      func(ctx context.Context, id, originalURL string) (string, error)
 	saveBatchFunc func(ctx context.Context, records []repository.URLRecord) ([]repository.URLRecord, error)
-	getFunc       func(ctx context.Context, id string) (string, bool)
+	getFunc       func(ctx context.Context, id string) (string, error)
 }
 
 var _ handler.URLRepository = (*mockRepository)(nil)
@@ -56,7 +56,7 @@ func (m *mockRepository) SaveBatch(ctx context.Context, records []repository.URL
 	return stored, nil
 }
 
-func (m *mockRepository) Get(ctx context.Context, id string) (string, bool) {
+func (m *mockRepository) Get(ctx context.Context, id string) (string, error) {
 	return m.getFunc(ctx, id)
 }
 
@@ -373,8 +373,8 @@ func TestURLHandler_Redirect(t *testing.T) {
 
 func TestURLHandler_Redirect_UnknownIDNeverHitsRepository(t *testing.T) {
 	mock := &mockRepository{
-		getFunc: func(_ context.Context, id string) (string, bool) {
-			return "", false
+		getFunc: func(_ context.Context, id string) (string, error) {
+			return "", repository.ErrNotFound
 		},
 	}
 

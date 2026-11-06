@@ -10,6 +10,7 @@ var (
 	ErrIDConflict  = errors.New("id already exists")
 	ErrURLConflict = errors.New("original url already exists")
 	ErrClosed      = errors.New("repository is closed")
+	ErrNotFound    = errors.New("short url not found")
 )
 
 type URLRecord struct {
@@ -70,21 +71,26 @@ func (r *MemoryRepository) SaveBatch(_ context.Context, records []URLRecord) ([]
 		stored[i] = rec
 	}
 
-	for i, rec := range stored {
+	for _, rec := range stored {
 		if _, alreadyStored := r.m[rec.ID]; alreadyStored {
 			continue
 		}
 
-		r.m[rec.ID] = records[i].OriginalURL
-		r.byURL[records[i].OriginalURL] = rec.ID
+		r.m[rec.ID] = rec.OriginalURL
+		r.byURL[rec.OriginalURL] = rec.ID
 	}
 
 	return stored, nil
 }
 
-func (r *MemoryRepository) Get(_ context.Context, id string) (string, bool) {
+func (r *MemoryRepository) Get(_ context.Context, id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	originalURL, ok := r.m[id]
-	return originalURL, ok
+	if !ok {
+		return "", ErrNotFound
+	}
+
+	return originalURL, nil
 }

@@ -29,7 +29,7 @@ const (
 type URLRepository interface {
 	Save(ctx context.Context, id, originalURL string) (storedID string, err error)
 	SaveBatch(ctx context.Context, records []repository.URLRecord) (stored []repository.URLRecord, err error)
-	Get(ctx context.Context, id string) (originalURL string, ok bool)
+	Get(ctx context.Context, id string) (originalURL string, err error)
 }
 
 type URLHandler struct {
@@ -178,9 +178,14 @@ func writeJSON(c *gin.Context, status int, response any) {
 func (h *URLHandler) Redirect(c *gin.Context) {
 	id := c.Param("id")
 
-	originalURL, ok := h.repo.Get(c.Request.Context(), id)
-	if !ok {
+	originalURL, err := h.repo.Get(c.Request.Context(), id)
+	if errors.Is(err, repository.ErrNotFound) {
 		c.String(http.StatusBadRequest, "unknown short URL id")
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("redirect: failed to look up the url")
+		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}
 

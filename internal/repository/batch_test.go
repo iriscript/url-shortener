@@ -14,7 +14,7 @@ import (
 type batchRepository interface {
 	Save(ctx context.Context, id, originalURL string) (string, error)
 	SaveBatch(ctx context.Context, records []repository.URLRecord) ([]repository.URLRecord, error)
-	Get(ctx context.Context, id string) (string, bool)
+	Get(ctx context.Context, id string) (string, error)
 }
 
 func batchBackends(t *testing.T) map[string]batchRepository {
@@ -47,9 +47,9 @@ func TestSaveBatch_StoresEveryRecord(t *testing.T) {
 			}
 
 			for _, rec := range records {
-				got, ok := repo.Get(ctx, rec.ID)
-				if !ok {
-					t.Fatalf("Get(%q) found nothing", rec.ID)
+				got, err := repo.Get(ctx, rec.ID)
+				if err != nil {
+					t.Fatalf("Get(%q) failed: %v", rec.ID, err)
 				}
 				if got != rec.OriginalURL {
 					t.Errorf("Get(%q) = %q, want %q", rec.ID, got, rec.OriginalURL)
@@ -76,7 +76,7 @@ func TestSaveBatch_RejectsIDAlreadyStoredAndWritesNothing(t *testing.T) {
 				t.Fatalf("SaveBatch error = %v, want %v", err, repository.ErrIDConflict)
 			}
 
-			if _, ok := repo.Get(ctx, "fresh001"); ok {
+			if _, err := repo.Get(ctx, "fresh001"); !errors.Is(err, repository.ErrNotFound) {
 				t.Error("a record from the rejected batch was stored")
 			}
 		})
@@ -96,7 +96,7 @@ func TestSaveBatch_RejectsDuplicateIDsInsideTheBatch(t *testing.T) {
 				t.Fatalf("SaveBatch error = %v, want %v", err, repository.ErrIDConflict)
 			}
 
-			if _, ok := repo.Get(ctx, "sameIdAA"); ok {
+			if _, err := repo.Get(ctx, "sameIdAA"); !errors.Is(err, repository.ErrNotFound) {
 				t.Error("a record from the rejected batch was stored")
 			}
 		})
@@ -141,9 +141,9 @@ func TestSaveBatch_IsSafeUnderConcurrency(t *testing.T) {
 					id := fmt.Sprintf("g%02di%02d", g, i)
 					want := fmt.Sprintf("https://example.com/%d/%d", g, i)
 
-					got, ok := repo.Get(ctx, id)
-					if !ok {
-						t.Errorf("Get(%q) found nothing", id)
+					got, err := repo.Get(ctx, id)
+					if err != nil {
+						t.Errorf("Get(%q) failed: %v", id, err)
 						continue
 					}
 					if got != want {
