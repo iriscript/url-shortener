@@ -13,6 +13,7 @@ import (
 
 	"github.com/iriscript/url-shortener/internal/app/logger"
 	"github.com/iriscript/url-shortener/internal/config"
+	"github.com/iriscript/url-shortener/internal/database"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
 	"github.com/iriscript/url-shortener/internal/router"
@@ -36,7 +37,23 @@ func run() error {
 
 	cfg := config.New()
 
-	repo, err := newRepository(cfg.Storage)
+	db, err := database.New(ctx, cfg.Database)
+	if err != nil && !errors.Is(err, database.ErrNotConfigured) {
+		return fmt.Errorf("failed to init database connection: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close database connection")
+		}
+	}()
+
+	if db != nil {
+		if err := database.Migrate(cfg.Database.DSN); err != nil {
+			return fmt.Errorf("failed to apply migrations: %w", err)
+		}
+	}
+
+	repo, err := newRepository(db, cfg.Storage)
 	if err != nil {
 		return fmt.Errorf("failed to init repository: %w", err)
 	}
@@ -49,7 +66,8 @@ func run() error {
 	}
 
 	h := handler.NewURLHandler(repo, cfg.Handler)
-	rout := router.NewRouter(h)
+	ping := handler.NewPingHandler(db)
+	rout := router.NewRouter(h, ping)
 	srv := server.New(cfg.Server, rout)
 
 	errCh := make(chan error, 1)
@@ -75,13 +93,20 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRepository(cfg config.StorageConfig) (handler.URLRepository, error) {
-	if cfg.FileStoragePath == "" {
-		log.Info().Msg("File storage path is empty, using in-memory storage")
-		return repository.NewMemoryRepository(), nil
+func newRepository(db *database.DB, cfg config.StorageConfig) (handler.URLRepository, error) {
+	if db != nil {
+		log.Info().Msg("Using database storage")
+
+		return repository.NewPostgresRepository(db), nil
 	}
 
-	log.Info().Str("fileStoragePath", cfg.FileStoragePath).Msg("Using file storage")
+	if cfg.FileStoragePath != "" {
+		log.Info().Str("fileStoragePath", cfg.FileStoragePath).Msg("Using file storage")
 
-	return repository.NewFileRepository(cfg.FileStoragePath)
+		return repository.NewFileRepository(cfg.FileStoragePath)
+	}
+
+	log.Info().Msg("Neither database DSN nor file storage path is set, using in-memory storage")
+
+	return repository.NewMemoryRepository(), nil
 }
