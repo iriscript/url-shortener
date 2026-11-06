@@ -20,16 +20,16 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
-func (r *PostgresRepository) Save(ctx context.Context, id, originalURL string) (string, error) {
-	const query = `INSERT INTO short_urls (short_id, original_url)
-		VALUES ($1, $2)
+func (r *PostgresRepository) Save(ctx context.Context, rec URLRecord) (string, error) {
+	const query = `INSERT INTO short_urls (short_id, original_url, user_id)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (original_url) DO NOTHING
 		RETURNING short_id`
 
 	var storedID string
-	err := r.pool.QueryRow(ctx, query, id, originalURL).Scan(&storedID)
+	err := r.pool.QueryRow(ctx, query, rec.ID, rec.OriginalURL, rec.UserID).Scan(&storedID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		existingID, lookupErr := r.getIDByURL(ctx, originalURL)
+		existingID, lookupErr := r.getIDByURL(ctx, rec.OriginalURL)
 		if lookupErr != nil {
 			return "", lookupErr
 		}
@@ -51,14 +51,14 @@ func (r *PostgresRepository) Save(ctx context.Context, id, originalURL string) (
 func (r *PostgresRepository) SaveBatch(ctx context.Context, records []URLRecord) ([]URLRecord, error) {
 	const query = `WITH input AS (
 			SELECT *
-			FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS t(short_id, original_url, ord)
+			FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS t(short_id, original_url, user_id, ord)
 		), inserted AS (
-			INSERT INTO short_urls (short_id, original_url)
-			SELECT short_id, original_url FROM input
+			INSERT INTO short_urls (short_id, original_url, user_id)
+			SELECT short_id, original_url, user_id FROM input
 			ON CONFLICT (original_url) DO NOTHING
 			RETURNING short_id, original_url
 		)
-		SELECT input.original_url, COALESCE(inserted.short_id, existing.short_id)
+		SELECT input.original_url, COALESCE(inserted.short_id, existing.short_id), input.user_id
 		FROM input
 		LEFT JOIN inserted ON inserted.original_url = input.original_url
 		LEFT JOIN short_urls existing ON existing.original_url = input.original_url
@@ -66,12 +66,14 @@ func (r *PostgresRepository) SaveBatch(ctx context.Context, records []URLRecord)
 
 	ids := make([]string, len(records))
 	originalURLs := make([]string, len(records))
+	userIDs := make([]string, len(records))
 	for i, rec := range records {
 		ids[i] = rec.ID
 		originalURLs[i] = rec.OriginalURL
+		userIDs[i] = rec.UserID
 	}
 
-	rows, err := r.pool.Query(ctx, query, ids, originalURLs)
+	rows, err := r.pool.Query(ctx, query, ids, originalURLs, userIDs)
 	if err != nil {
 		return nil, wrapBatchError(err)
 	}
@@ -80,7 +82,7 @@ func (r *PostgresRepository) SaveBatch(ctx context.Context, records []URLRecord)
 	stored := make([]URLRecord, 0, len(records))
 	for rows.Next() {
 		var rec URLRecord
-		if err := rows.Scan(&rec.OriginalURL, &rec.ID); err != nil {
+		if err := rows.Scan(&rec.OriginalURL, &rec.ID, &rec.UserID); err != nil {
 			return nil, fmt.Errorf("failed to read the stored URL batch: %w", err)
 		}
 
@@ -131,4 +133,32 @@ func (r *PostgresRepository) Get(ctx context.Context, id string) (string, bool) 
 	}
 
 	return originalURL, true
+}
+
+func (r *PostgresRepository) GetByUser(ctx context.Context, userID string) ([]URLRecord, error) {
+	const query = `SELECT short_id, original_url
+		FROM short_urls
+		WHERE user_id = $1
+		ORDER BY id`
+
+	rows, err := r.pool.Query(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select the user URLs: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]URLRecord, 0)
+	for rows.Next() {
+		rec := URLRecord{UserID: userID}
+		if err := rows.Scan(&rec.ID, &rec.OriginalURL); err != nil {
+			return nil, fmt.Errorf("failed to read the user URLs: %w", err)
+		}
+
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read the user URLs: %w", err)
+	}
+
+	return records, nil
 }

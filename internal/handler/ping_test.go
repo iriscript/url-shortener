@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/iriscript/url-shortener/internal/handler"
+	"github.com/iriscript/url-shortener/internal/repository"
 	"github.com/iriscript/url-shortener/internal/router"
 
 	"github.com/iriscript/url-shortener/internal/config"
@@ -27,13 +28,14 @@ func newTestPingServer(t *testing.T, pinger handler.Pinger) *httptest.Server {
 	t.Helper()
 
 	repo := &mockRepository{
-		saveFunc: func(_ context.Context, id, _ string) (string, error) { return id, nil },
+		saveFunc: func(_ context.Context, rec repository.URLRecord) (string, error) { return rec.ID, nil },
 		getFunc:  func(context.Context, string) (string, bool) { return "", false },
 	}
 
 	rout := router.NewRouter(
 		handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}),
 		handler.NewPingHandler(pinger),
+		config.AuthConfig{SecretKey: testSecret},
 	)
 	ts := httptest.NewServer(rout)
 	t.Cleanup(ts.Close)

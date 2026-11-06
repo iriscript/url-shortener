@@ -61,7 +61,7 @@ func run() error {
 
 	h := handler.NewURLHandler(repo, cfg.Handler)
 	ping := handler.NewPingHandler(db)
-	rout := router.NewRouter(h, ping)
+	rout := router.NewRouter(h, ping, cfg.Auth)
 	srv := server.New(cfg.Server, rout)
 
 	errCh := make(chan error, 1)
