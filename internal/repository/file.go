@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ type record struct {
 type FileRepository struct {
 	mu      sync.Mutex
 	index   map[string]string
+	byURL   map[string]string
 	count   int
 	path    string
 	file    *os.File
@@ -38,6 +40,7 @@ func NewFileRepository(path string) (*FileRepository, error) {
 
 	r := &FileRepository{
 		index: make(map[string]string),
+		byURL: make(map[string]string),
 		path:  path,
 	}
 
@@ -78,18 +81,64 @@ func (r *FileRepository) load() error {
 		}
 
 		r.index[rec.ShortURL] = rec.OriginalURL
+		r.byURL[rec.OriginalURL] = rec.ShortURL
 		r.count++
 	}
 }
 
-func (r *FileRepository) Save(id, originalURL string) error {
+func (r *FileRepository) Save(_ context.Context, id, originalURL string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if existingID, exists := r.byURL[originalURL]; exists {
+		return existingID, ErrURLConflict
+	}
 	if _, exists := r.index[id]; exists {
-		return ErrIDConflict
+		return "", ErrIDConflict
 	}
 
+	if err := r.store(id, originalURL); err != nil {
+		return "", err
+	}
+
+	return id, nil
+}
+
+func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) ([]URLRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	stored := make([]URLRecord, len(records))
+	fresh := make([]int, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+
+	for i, rec := range records {
+		if existingID, exists := r.byURL[rec.OriginalURL]; exists {
+			stored[i] = URLRecord{ID: existingID, OriginalURL: rec.OriginalURL}
+			continue
+		}
+		if _, exists := r.index[rec.ID]; exists {
+			return nil, ErrIDConflict
+		}
+		if _, duplicate := seen[rec.ID]; duplicate {
+			return nil, ErrIDConflict
+		}
+
+		seen[rec.ID] = struct{}{}
+		stored[i] = rec
+		fresh = append(fresh, i)
+	}
+
+	for _, i := range fresh {
+		if err := r.store(stored[i].ID, stored[i].OriginalURL); err != nil {
+			return nil, err
+		}
+	}
+
+	return stored, nil
+}
+
+func (r *FileRepository) store(id, originalURL string) error {
 	rec := record{
 		UUID:        strconv.Itoa(r.count + 1),
 		ShortURL:    id,
@@ -101,16 +150,22 @@ func (r *FileRepository) Save(id, originalURL string) error {
 	}
 
 	r.index[id] = originalURL
+	r.byURL[originalURL] = id
 	r.count++
 
 	return nil
 }
 
-func (r *FileRepository) Get(id string) (string, bool) {
+func (r *FileRepository) Get(_ context.Context, id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	originalURL, ok := r.index[id]
-	return originalURL, ok
+	if !ok {
+		return "", ErrNotFound
+	}
+
+	return originalURL, nil
 }
 
 func (r *FileRepository) append(rec record) error {

@@ -10,6 +10,7 @@ func TestParse_Priority(t *testing.T) {
 		wantAddress string
 		wantBaseURL string
 		wantStorage string
+		wantDSN     string
 	}{
 		{
 			name:        "defaults when nothing is set",
@@ -79,6 +80,9 @@ func TestParse_Priority(t *testing.T) {
 			if cfg.Storage.FileStoragePath != tt.wantStorage {
 				t.Errorf("Storage.FileStoragePath = %q, want %q", cfg.Storage.FileStoragePath, tt.wantStorage)
 			}
+			if cfg.Database.DSN != tt.wantDSN {
+				t.Errorf("Database.DSN = %q, want %q", cfg.Database.DSN, tt.wantDSN)
+			}
 		})
 	}
 }
@@ -98,5 +102,8 @@ func TestParse_ReturnsDefaultsAlongsideError(t *testing.T) {
 	}
 	if cfg.Storage.FileStoragePath != defaultFileStoragePath {
 		t.Errorf("Storage.FileStoragePath = %q, want %q", cfg.Storage.FileStoragePath, defaultFileStoragePath)
+	}
+	if cfg.Database.DSN != defaultDatabaseDSN {
+		t.Errorf("Database.DSN = %q, want %q", cfg.Database.DSN, defaultDatabaseDSN)
 	}
 }
