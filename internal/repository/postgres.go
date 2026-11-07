@@ -9,15 +9,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/rs/zerolog/log"
+
+	"github.com/iriscript/url-shortener/internal/database"
 )
 
 type PostgresRepository struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
-	return &PostgresRepository{pool: pool}
+func NewPostgresRepository(db *database.DB) *PostgresRepository {
+	return &PostgresRepository{pool: db.Pool()}
 }
 
 func (r *PostgresRepository) Save(ctx context.Context, rec URLRecord) (string, error) {
@@ -119,20 +120,19 @@ func (r *PostgresRepository) getIDByURL(ctx context.Context, originalURL string)
 	return id, nil
 }
 
-func (r *PostgresRepository) Get(ctx context.Context, id string) (string, bool) {
+func (r *PostgresRepository) Get(ctx context.Context, id string) (string, error) {
 	const query = `SELECT original_url FROM short_urls WHERE short_id = $1`
 
 	var originalURL string
 	err := r.pool.QueryRow(ctx, query, id).Scan(&originalURL)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false
+		return "", ErrNotFound
 	}
 	if err != nil {
-		log.Error().Err(err).Str("id", id).Msg("postgres: failed to select the URL")
-		return "", false
+		return "", fmt.Errorf("postgres: failed to select the url: %w", err)
 	}
 
-	return originalURL, true
+	return originalURL, nil
 }
 
 func (r *PostgresRepository) GetByUser(ctx context.Context, userID string) ([]URLRecord, error) {

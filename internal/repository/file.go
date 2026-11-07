@@ -166,11 +166,16 @@ func (r *FileRepository) indexRecord(rec record) {
 	}
 }
 
-func (r *FileRepository) Get(_ context.Context, id string) (string, bool) {
+func (r *FileRepository) Get(_ context.Context, id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	originalURL, ok := r.index[id]
-	return originalURL, ok
+	if !ok {
+		return "", ErrNotFound
+	}
+
+	return originalURL, nil
 }
 
 func (r *FileRepository) GetByUser(_ context.Context, userID string) ([]URLRecord, error) {

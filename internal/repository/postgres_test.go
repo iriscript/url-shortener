@@ -6,17 +6,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/database"
 	"github.com/iriscript/url-shortener/internal/repository"
 )
 
-// newTestPool connects to the database named by TEST_DATABASE_DSN, applies the
-// migrations and hands back a pool. Without that variable the test is skipped,
-// so `go test ./...` stays runnable without a database.
-func newTestPool(t *testing.T) *pgxpool.Pool {
+func newTestDB(t *testing.T) *database.DB {
 	t.Helper()
 
 	dsn := os.Getenv("TEST_DATABASE_DSN")
@@ -35,11 +30,11 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	if err := db.Ping(ctx); err != nil {
 		t.Fatalf("failed to reach the database: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := database.Migrate(dsn); err != nil {
 		t.Fatalf("failed to apply migrations: %v", err)
 	}
 
-	return db.Pool()
+	return db
 }
 
 func TestPostgresRepository_SaveAndGet(t *testing.T) {
@@ -49,8 +44,9 @@ func TestPostgresRepository_SaveAndGet(t *testing.T) {
 	)
 
 	ctx := t.Context()
-	pool := newTestPool(t)
-	repo := repository.NewPostgresRepository(pool)
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
@@ -60,9 +56,9 @@ func TestPostgresRepository_SaveAndGet(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	got, ok := repo.Get(ctx, id)
-	if !ok {
-		t.Fatal("Get did not find the saved URL")
+	got, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
 	}
 	if got != originalURL {
 		t.Errorf("Get = %q, want %q", got, originalURL)
@@ -76,8 +72,9 @@ func TestPostgresRepository_SaveReturnsIDConflict(t *testing.T) {
 	)
 
 	ctx := t.Context()
-	pool := newTestPool(t)
-	repo := repository.NewPostgresRepository(pool)
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
@@ -100,8 +97,9 @@ func TestPostgresRepository_SaveBatch(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	pool := newTestPool(t)
-	repo := repository.NewPostgresRepository(pool)
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
@@ -113,9 +111,9 @@ func TestPostgresRepository_SaveBatch(t *testing.T) {
 	}
 
 	for _, rec := range records {
-		got, ok := repo.Get(ctx, rec.ID)
-		if !ok {
-			t.Fatalf("Get(%q) found nothing", rec.ID)
+		got, err := repo.Get(ctx, rec.ID)
+		if err != nil {
+			t.Fatalf("Get(%q) failed: %v", rec.ID, err)
 		}
 		if got != rec.OriginalURL {
 			t.Errorf("Get(%q) = %q, want %q", rec.ID, got, rec.OriginalURL)
@@ -125,8 +123,9 @@ func TestPostgresRepository_SaveBatch(t *testing.T) {
 
 func TestPostgresRepository_SaveBatchIsAtomicOnConflict(t *testing.T) {
 	ctx := t.Context()
-	pool := newTestPool(t)
-	repo := repository.NewPostgresRepository(pool)
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
@@ -145,7 +144,7 @@ func TestPostgresRepository_SaveBatchIsAtomicOnConflict(t *testing.T) {
 		t.Fatalf("SaveBatch error = %v, want %v", err, repository.ErrIDConflict)
 	}
 
-	if _, ok := repo.Get(ctx, "pgAtomic2"); ok {
+	if _, err := repo.Get(ctx, "pgAtomic2"); !errors.Is(err, repository.ErrNotFound) {
 		t.Error("a record from the rejected batch was stored")
 	}
 }
@@ -154,8 +153,9 @@ func TestPostgresRepository_SaveReturnsExistingIDForKnownURL(t *testing.T) {
 	const originalURL = "https://pg-conflict.example.com/"
 
 	ctx := t.Context()
-	pool := newTestPool(t)
-	repo := repository.NewPostgresRepository(pool)
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
@@ -175,7 +175,7 @@ func TestPostgresRepository_SaveReturnsExistingIDForKnownURL(t *testing.T) {
 		t.Errorf("Save returned id %q, want the already stored %q", secondID, firstID)
 	}
 
-	if _, ok := repo.Get(ctx, "pgKnown2"); ok {
+	if _, err := repo.Get(ctx, "pgKnown2"); !errors.Is(err, repository.ErrNotFound) {
 		t.Error("the rejected id was stored anyway")
 	}
 }
@@ -187,8 +187,9 @@ func TestPostgresRepository_SaveBatchReusesExistingIDForKnownURL(t *testing.T) {
 	)
 
 	ctx := t.Context()
-	pool := newTestPool(t)
-	repo := repository.NewPostgresRepository(pool)
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
@@ -218,7 +219,7 @@ func TestPostgresRepository_SaveBatchReusesExistingIDForKnownURL(t *testing.T) {
 		t.Errorf("known URL got id %q, want the already stored %q", stored[1].ID, knownID)
 	}
 
-	if _, ok := repo.Get(ctx, "pgReuse3"); ok {
+	if _, err := repo.Get(ctx, "pgReuse3"); !errors.Is(err, repository.ErrNotFound) {
 		t.Error("a second id was stored for an already known URL")
 	}
 }
@@ -229,7 +230,8 @@ func TestMigrate_DeduplicatesExistingURLs(t *testing.T) {
 	const originalURL = "https://pg-dedup.example.com/"
 
 	ctx := t.Context()
-	pool := newTestPool(t)
+	db := newTestDB(t)
+	pool := db.Pool()
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
@@ -246,7 +248,7 @@ func TestMigrate_DeduplicatesExistingURLs(t *testing.T) {
 		t.Fatalf("found %d leftover rows for the test URL, want 0", count)
 	}
 
-	if _, err := repository.NewPostgresRepository(pool).Save(ctx, repository.URLRecord{ID: "pgDedup1", OriginalURL: originalURL}); err != nil {
+	if _, err := repository.NewPostgresRepository(db).Save(ctx, repository.URLRecord{ID: "pgDedup1", OriginalURL: originalURL}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -259,9 +261,9 @@ func TestMigrate_DeduplicatesExistingURLs(t *testing.T) {
 
 func TestPostgresRepository_GetUnknownID(t *testing.T) {
 	ctx := t.Context()
-	repo := repository.NewPostgresRepository(newTestPool(t))
+	repo := repository.NewPostgresRepository(newTestDB(t))
 
-	if _, ok := repo.Get(ctx, "noSuchID"); ok {
+	if _, err := repo.Get(ctx, "noSuchID"); !errors.Is(err, repository.ErrNotFound) {
 		t.Error("Get found a URL for an unknown id")
 	}
 }

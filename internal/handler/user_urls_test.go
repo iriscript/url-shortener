@@ -47,7 +47,7 @@ func TestURLHandler_UserURLs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestServer(t, &mockRepository{
-				getFunc: func(context.Context, string) (string, bool) { return "", false },
+				getFunc: func(context.Context, string) (string, error) { return "", repository.ErrNotFound },
 				getByUserFunc: func(_ context.Context, userID string) ([]repository.URLRecord, error) {
 					if userID == "" {
 						t.Error("handler asked the repository for an empty user id")
@@ -102,7 +102,7 @@ func TestURLHandler_UserURLs_RejectsCookieWithoutUserID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestServer(t, &mockRepository{
-				getFunc: func(context.Context, string) (string, bool) { return "", false },
+				getFunc: func(context.Context, string) (string, error) { return "", repository.ErrNotFound },
 				getByUserFunc: func(context.Context, string) ([]repository.URLRecord, error) {
 					t.Error("handler queried the repository for an unauthorized request")
 					return nil, nil

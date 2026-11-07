@@ -101,9 +101,9 @@ func TestFileRepository_RestoresAfterRestart(t *testing.T) {
 
 	restarted := mustNewFileRepository(t, path)
 
-	originalURL, ok := restarted.Get(context.Background(), "4rSPg8ap")
-	if !ok {
-		t.Fatal("Get returned ok = false, want the URL restored from file")
+	originalURL, err := restarted.Get(context.Background(), "4rSPg8ap")
+	if err != nil {
+		t.Fatalf("Get failed: %v, want the URL restored from file", err)
 	}
 	if originalURL != yandexURL {
 		t.Errorf("Get = %q, want %q", originalURL, yandexURL)
@@ -152,8 +152,8 @@ func TestFileRepository_ReturnsConflictOnDuplicateID(t *testing.T) {
 func TestFileRepository_StartsEmptyWhenFileMissing(t *testing.T) {
 	repo := mustNewFileRepository(t, newRepoPath(t))
 
-	if _, ok := repo.Get(context.Background(), "4rSPg8ap"); ok {
-		t.Error("Get returned ok = true on a fresh repository, want false")
+	if _, err := repo.Get(context.Background(), "4rSPg8ap"); !errors.Is(err, ErrNotFound) {
+		t.Error("Get did not return ErrNotFound on a fresh repository")
 	}
 }
 
@@ -165,8 +165,8 @@ func TestFileRepository_StartsEmptyWhenFileIsEmpty(t *testing.T) {
 
 	repo := mustNewFileRepository(t, path)
 
-	if _, ok := repo.Get(context.Background(), "4rSPg8ap"); ok {
-		t.Error("Get returned ok = true on an empty storage file, want false")
+	if _, err := repo.Get(context.Background(), "4rSPg8ap"); !errors.Is(err, ErrNotFound) {
+		t.Error("Get did not return ErrNotFound on an empty storage file")
 	}
 }
 
@@ -255,9 +255,9 @@ func TestFileRepository_LoadsRecordsWithoutUserID(t *testing.T) {
 
 	repo := mustNewFileRepository(t, path)
 
-	originalURL, ok := repo.Get(context.Background(), "4rSPg8ap")
-	if !ok || originalURL != yandexURL {
-		t.Fatalf("Get = (%q, %t), want (%q, true)", originalURL, ok, yandexURL)
+	originalURL, err := repo.Get(context.Background(), "4rSPg8ap")
+	if err != nil || originalURL != yandexURL {
+		t.Fatalf("Get = (%q, %v), want (%q, nil)", originalURL, err, yandexURL)
 	}
 
 	records, err := repo.GetByUser(context.Background(), "")

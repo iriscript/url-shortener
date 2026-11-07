@@ -47,6 +47,12 @@ func run() error {
 		}
 	}()
 
+	if db != nil {
+		if err := database.Migrate(cfg.Database.DSN); err != nil {
+			return fmt.Errorf("failed to apply migrations: %w", err)
+		}
+	}
+
 	repo, err := newRepository(db, cfg.Storage)
 	if err != nil {
 		return fmt.Errorf("failed to init repository: %w", err)
@@ -88,14 +94,10 @@ func run() error {
 }
 
 func newRepository(db *database.DB, cfg config.StorageConfig) (handler.URLRepository, error) {
-	if pool := db.Pool(); pool != nil {
+	if db != nil {
 		log.Info().Msg("Using database storage")
 
-		if err := db.Migrate(); err != nil {
-			return nil, fmt.Errorf("failed to apply migrations: %w", err)
-		}
-
-		return repository.NewPostgresRepository(pool), nil
+		return repository.NewPostgresRepository(db), nil
 	}
 
 	if cfg.FileStoragePath != "" {

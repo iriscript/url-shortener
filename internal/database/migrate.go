@@ -13,8 +13,8 @@ import (
 	"github.com/iriscript/url-shortener/migrations"
 )
 
-func (db *DB) Migrate() error {
-	if db == nil || db.dsn == "" {
+func Migrate(dsn string) error {
+	if dsn == "" {
 		return ErrNotConfigured
 	}
 
@@ -24,7 +24,7 @@ func (db *DB) Migrate() error {
 	}
 	defer func() { _ = source.Close() }()
 
-	sqlDB, err := sql.Open("pgx", db.dsn)
+	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("failed to open migration connection: %w", err)
 	}
