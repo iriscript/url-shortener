@@ -14,6 +14,7 @@ type URLHandler interface {
 	ShortenBatch(c *gin.Context)
 	Redirect(c *gin.Context)
 	UserURLs(c *gin.Context)
+	DeleteUserURLs(c *gin.Context)
 }
 
 type PingHandler interface {
@@ -32,6 +33,7 @@ func NewRouter(h URLHandler, p PingHandler, auth config.AuthConfig) http.Handler
 	router.POST("/api/shorten", h.ShortenJSON)
 	router.POST("/api/shorten/batch", h.ShortenBatch)
 	router.GET("/api/user/urls", h.UserURLs)
+	router.DELETE("/api/user/urls", h.DeleteUserURLs)
 	router.GET("/ping", p.Ping)
 	router.GET("/:id", h.Redirect)
 	return router

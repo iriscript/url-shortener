@@ -22,6 +22,7 @@ type record struct {
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
 	UserID      string `json:"user_id,omitempty"`
+	IsDeleted   bool   `json:"is_deleted,omitempty"`
 }
 
 type FileRepository struct {
@@ -29,6 +30,8 @@ type FileRepository struct {
 	index   map[string]string
 	byURL   map[string]string
 	byUser  map[string][]string
+	owner   map[string]string
+	deleted map[string]struct{}
 	count   int
 	path    string
 	file    *os.File
@@ -41,10 +44,12 @@ func NewFileRepository(path string) (*FileRepository, error) {
 	}
 
 	r := &FileRepository{
-		index:  make(map[string]string),
-		byURL:  make(map[string]string),
-		byUser: make(map[string][]string),
-		path:   path,
+		index:   make(map[string]string),
+		byURL:   make(map[string]string),
+		byUser:  make(map[string][]string),
+		owner:   make(map[string]string),
+		deleted: make(map[string]struct{}),
+		path:    path,
 	}
 
 	if err := r.load(); err != nil {
@@ -159,16 +164,34 @@ func (r *FileRepository) store(rec URLRecord) error {
 }
 
 func (r *FileRepository) indexRecord(rec record) {
+	if rec.IsDeleted {
+		r.deleted[rec.ShortURL] = struct{}{}
+
+		if originalURL, ok := r.index[rec.ShortURL]; ok {
+			if r.byURL[originalURL] == rec.ShortURL {
+				delete(r.byURL, originalURL)
+			}
+			delete(r.index, rec.ShortURL)
+		}
+
+		return
+	}
+
 	r.index[rec.ShortURL] = rec.OriginalURL
 	r.byURL[rec.OriginalURL] = rec.ShortURL
 	if rec.UserID != "" {
 		r.byUser[rec.UserID] = append(r.byUser[rec.UserID], rec.ShortURL)
+		r.owner[rec.ShortURL] = rec.UserID
 	}
 }
 
 func (r *FileRepository) Get(_ context.Context, id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if _, deleted := r.deleted[id]; deleted {
+		return "", ErrDeleted
+	}
 
 	originalURL, ok := r.index[id]
 	if !ok {
@@ -185,10 +208,44 @@ func (r *FileRepository) GetByUser(_ context.Context, userID string) ([]URLRecor
 	ids := r.byUser[userID]
 	records := make([]URLRecord, 0, len(ids))
 	for _, id := range ids {
+		if _, deleted := r.deleted[id]; deleted {
+			continue
+		}
 		records = append(records, URLRecord{ID: id, OriginalURL: r.index[id], UserID: userID})
 	}
 
 	return records, nil
+}
+
+func (r *FileRepository) MarkDeleted(_ context.Context, records []DeleteRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, rec := range records {
+		owner, ok := r.owner[rec.ID]
+		if !ok || owner != rec.UserID {
+			continue
+		}
+		if _, deleted := r.deleted[rec.ID]; deleted {
+			continue
+		}
+
+		line := record{
+			UUID:      strconv.Itoa(r.count + 1),
+			ShortURL:  rec.ID,
+			UserID:    rec.UserID,
+			IsDeleted: true,
+		}
+
+		if err := r.append(line); err != nil {
+			return err
+		}
+
+		r.indexRecord(line)
+		r.count++
+	}
+
+	return nil
 }
 
 func (r *FileRepository) append(rec record) error {

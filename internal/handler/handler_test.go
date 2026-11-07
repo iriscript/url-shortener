@@ -72,11 +72,29 @@ func (m *mockRepository) GetByUser(ctx context.Context, userID string) ([]reposi
 	return m.getByUserFunc(ctx, userID)
 }
 
+type mockDeleter struct {
+	enqueueFunc func(userID string, ids []string)
+}
+
+var _ handler.Deleter = (*mockDeleter)(nil)
+
+func (m *mockDeleter) Enqueue(userID string, ids []string) {
+	if m.enqueueFunc != nil {
+		m.enqueueFunc(userID, ids)
+	}
+}
+
 func newTestHTTPServer(t *testing.T, repo handler.URLRepository) *httptest.Server {
 	t.Helper()
 
+	return newTestHTTPServerWithDeleter(t, repo, &mockDeleter{})
+}
+
+func newTestHTTPServerWithDeleter(t *testing.T, repo handler.URLRepository, del handler.Deleter) *httptest.Server {
+	t.Helper()
+
 	rout := router.NewRouter(
-		handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}),
+		handler.NewURLHandler(repo, del, config.HandlerConfig{BaseURL: baseURL}),
 		handler.NewPingHandler(&mockPinger{pingFunc: func(context.Context) error { return nil }}),
 		config.AuthConfig{SecretKey: testSecret},
 	)
@@ -90,6 +108,12 @@ func newTestServer(t *testing.T, repo handler.URLRepository) *resty.Client {
 	t.Helper()
 
 	return newTestClient(newTestHTTPServer(t, repo))
+}
+
+func newTestServerWithDeleter(t *testing.T, repo handler.URLRepository, del handler.Deleter) *resty.Client {
+	t.Helper()
+
+	return newTestClient(newTestHTTPServerWithDeleter(t, repo, del))
 }
 
 func newTestClient(ts *httptest.Server) *resty.Client {
@@ -402,6 +426,25 @@ func TestURLHandler_Redirect_UnknownIDNeverHitsRepository(t *testing.T) {
 
 	if resp.StatusCode() != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusBadRequest)
+	}
+}
+
+func TestURLHandler_Redirect_DeletedURL(t *testing.T) {
+	mock := &mockRepository{
+		getFunc: func(_ context.Context, id string) (string, error) {
+			return "", repository.ErrDeleted
+		},
+	}
+
+	client := newTestServer(t, mock)
+
+	resp, err := client.R().Get("/deletedID1")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if resp.StatusCode() != http.StatusGone {
+		t.Fatalf("status = %d, want %d", resp.StatusCode(), http.StatusGone)
 	}
 }
 

@@ -33,7 +33,7 @@ func newTestPingServer(t *testing.T, pinger handler.Pinger) *httptest.Server {
 	}
 
 	rout := router.NewRouter(
-		handler.NewURLHandler(repo, config.HandlerConfig{BaseURL: baseURL}),
+		handler.NewURLHandler(repo, &mockDeleter{}, config.HandlerConfig{BaseURL: baseURL}),
 		handler.NewPingHandler(pinger),
 		config.AuthConfig{SecretKey: testSecret},
 	)

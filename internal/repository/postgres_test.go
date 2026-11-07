@@ -267,3 +267,95 @@ func TestPostgresRepository_GetUnknownID(t *testing.T) {
 		t.Error("Get found a URL for an unknown id")
 	}
 }
+
+func TestPostgresRepository_MarkDeleted(t *testing.T) {
+	const (
+		id          = "pgDelete1"
+		originalURL = "https://practicum.yandex.ru/"
+	)
+
+	ctx := t.Context()
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
+	})
+
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: originalURL, UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: id, UserID: "owner"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+
+	if _, err := repo.Get(ctx, id); !errors.Is(err, repository.ErrDeleted) {
+		t.Errorf("Get error = %v, want %v", err, repository.ErrDeleted)
+	}
+}
+
+func TestPostgresRepository_MarkDeletedRespectsOwnership(t *testing.T) {
+	const (
+		id          = "pgDelete2"
+		originalURL = "https://ya.ru/"
+	)
+
+	ctx := t.Context()
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
+	})
+
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: originalURL, UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: id, UserID: "stranger"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+
+	got, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get failed: %v, want the url to still be reachable", err)
+	}
+	if got != originalURL {
+		t.Errorf("Get = %q, want %q", got, originalURL)
+	}
+}
+
+func TestPostgresRepository_GetByUserExcludesDeleted(t *testing.T) {
+	ctx := t.Context()
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id LIKE 'pgDelete3%'`)
+	})
+
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: "pgDelete3a", OriginalURL: "https://go.dev/", UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: "pgDelete3b", OriginalURL: "https://golang.org/", UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: "pgDelete3b", UserID: "owner"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+
+	records, err := repo.GetByUser(ctx, "owner")
+	if err != nil {
+		t.Fatalf("GetByUser failed: %v", err)
+	}
+	for _, rec := range records {
+		if rec.ID == "pgDelete3b" {
+			t.Errorf("GetByUser returned the deleted id %q", rec.ID)
+		}
+	}
+}

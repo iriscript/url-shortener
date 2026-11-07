@@ -11,6 +11,7 @@ var (
 	ErrURLConflict = errors.New("original url already exists")
 	ErrClosed      = errors.New("repository is closed")
 	ErrNotFound    = errors.New("short url not found")
+	ErrDeleted     = errors.New("short url deleted")
 )
 
 type URLRecord struct {
@@ -19,18 +20,27 @@ type URLRecord struct {
 	UserID      string
 }
 
+type DeleteRecord struct {
+	ID     string
+	UserID string
+}
+
 type MemoryRepository struct {
-	mu     sync.Mutex
-	m      map[string]string
-	byURL  map[string]string
-	byUser map[string][]string
+	mu      sync.Mutex
+	m       map[string]string
+	byURL   map[string]string
+	byUser  map[string][]string
+	owner   map[string]string
+	deleted map[string]struct{}
 }
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		m:      make(map[string]string),
-		byURL:  make(map[string]string),
-		byUser: make(map[string][]string),
+		m:       make(map[string]string),
+		byURL:   make(map[string]string),
+		byUser:  make(map[string][]string),
+		owner:   make(map[string]string),
+		deleted: make(map[string]struct{}),
 	}
 }
 
@@ -88,6 +98,10 @@ func (r *MemoryRepository) Get(_ context.Context, id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if _, deleted := r.deleted[id]; deleted {
+		return "", ErrDeleted
+	}
+
 	originalURL, ok := r.m[id]
 	if !ok {
 		return "", ErrNotFound
@@ -103,10 +117,35 @@ func (r *MemoryRepository) GetByUser(_ context.Context, userID string) ([]URLRec
 	ids := r.byUser[userID]
 	records := make([]URLRecord, 0, len(ids))
 	for _, id := range ids {
+		if _, deleted := r.deleted[id]; deleted {
+			continue
+		}
 		records = append(records, URLRecord{ID: id, OriginalURL: r.m[id], UserID: userID})
 	}
 
 	return records, nil
+}
+
+func (r *MemoryRepository) MarkDeleted(_ context.Context, records []DeleteRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, rec := range records {
+		if owner, ok := r.owner[rec.ID]; !ok || owner != rec.UserID {
+			continue
+		}
+		if _, deleted := r.deleted[rec.ID]; deleted {
+			continue
+		}
+
+		r.deleted[rec.ID] = struct{}{}
+
+		if originalURL, ok := r.m[rec.ID]; ok && r.byURL[originalURL] == rec.ID {
+			delete(r.byURL, originalURL)
+		}
+	}
+
+	return nil
 }
 
 // store indexes a record that is known to be absent. The caller must hold the mutex.
@@ -115,5 +154,6 @@ func (r *MemoryRepository) store(rec URLRecord) {
 	r.byURL[rec.OriginalURL] = rec.ID
 	if rec.UserID != "" {
 		r.byUser[rec.UserID] = append(r.byUser[rec.UserID], rec.ID)
+		r.owner[rec.ID] = rec.UserID
 	}
 }

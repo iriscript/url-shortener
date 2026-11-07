@@ -24,7 +24,7 @@ func NewPostgresRepository(db *database.DB) *PostgresRepository {
 func (r *PostgresRepository) Save(ctx context.Context, rec URLRecord) (string, error) {
 	const query = `INSERT INTO short_urls (short_id, original_url, user_id)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (original_url) DO NOTHING
+		ON CONFLICT (original_url) WHERE NOT is_deleted DO NOTHING
 		RETURNING short_id`
 
 	var storedID string
@@ -56,13 +56,13 @@ func (r *PostgresRepository) SaveBatch(ctx context.Context, records []URLRecord)
 		), inserted AS (
 			INSERT INTO short_urls (short_id, original_url, user_id)
 			SELECT short_id, original_url, user_id FROM input
-			ON CONFLICT (original_url) DO NOTHING
+			ON CONFLICT (original_url) WHERE NOT is_deleted DO NOTHING
 			RETURNING short_id, original_url
 		)
 		SELECT input.original_url, COALESCE(inserted.short_id, existing.short_id), input.user_id
 		FROM input
 		LEFT JOIN inserted ON inserted.original_url = input.original_url
-		LEFT JOIN short_urls existing ON existing.original_url = input.original_url
+		LEFT JOIN short_urls existing ON existing.original_url = input.original_url AND NOT existing.is_deleted
 		ORDER BY input.ord`
 
 	ids := make([]string, len(records))
@@ -110,7 +110,7 @@ func wrapBatchError(err error) error {
 }
 
 func (r *PostgresRepository) getIDByURL(ctx context.Context, originalURL string) (string, error) {
-	const query = `SELECT short_id FROM short_urls WHERE original_url = $1`
+	const query = `SELECT short_id FROM short_urls WHERE original_url = $1 AND NOT is_deleted`
 
 	var id string
 	if err := r.pool.QueryRow(ctx, query, originalURL).Scan(&id); err != nil {
@@ -121,15 +121,19 @@ func (r *PostgresRepository) getIDByURL(ctx context.Context, originalURL string)
 }
 
 func (r *PostgresRepository) Get(ctx context.Context, id string) (string, error) {
-	const query = `SELECT original_url FROM short_urls WHERE short_id = $1`
+	const query = `SELECT original_url, is_deleted FROM short_urls WHERE short_id = $1`
 
 	var originalURL string
-	err := r.pool.QueryRow(ctx, query, id).Scan(&originalURL)
+	var isDeleted bool
+	err := r.pool.QueryRow(ctx, query, id).Scan(&originalURL, &isDeleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("postgres: failed to select the url: %w", err)
+	}
+	if isDeleted {
+		return "", ErrDeleted
 	}
 
 	return originalURL, nil
@@ -138,7 +142,7 @@ func (r *PostgresRepository) Get(ctx context.Context, id string) (string, error)
 func (r *PostgresRepository) GetByUser(ctx context.Context, userID string) ([]URLRecord, error) {
 	const query = `SELECT short_id, original_url
 		FROM short_urls
-		WHERE user_id = $1
+		WHERE user_id = $1 AND NOT is_deleted
 		ORDER BY id`
 
 	rows, err := r.pool.Query(ctx, query, userID)
@@ -161,4 +165,31 @@ func (r *PostgresRepository) GetByUser(ctx context.Context, userID string) ([]UR
 	}
 
 	return records, nil
+}
+
+func (r *PostgresRepository) MarkDeleted(ctx context.Context, records []DeleteRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	const query = `WITH input AS (
+			SELECT * FROM unnest($1::text[], $2::text[]) AS t(short_id, user_id)
+		)
+		UPDATE short_urls
+		SET is_deleted = TRUE
+		FROM input
+		WHERE short_urls.short_id = input.short_id AND short_urls.user_id = input.user_id`
+
+	ids := make([]string, len(records))
+	userIDs := make([]string, len(records))
+	for i, rec := range records {
+		ids[i] = rec.ID
+		userIDs[i] = rec.UserID
+	}
+
+	if _, err := r.pool.Exec(ctx, query, ids, userIDs); err != nil {
+		return fmt.Errorf("failed to mark the URL batch deleted: %w", err)
+	}
+
+	return nil
 }

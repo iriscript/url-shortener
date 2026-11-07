@@ -23,6 +23,7 @@ const (
 	idLength   = 8
 
 	maxSaveAttempts = 100
+	maxDeleteIDs    = 1000
 
 	contentTypeJSON = "application/json; charset=utf-8"
 )
@@ -34,13 +35,18 @@ type URLRepository interface {
 	GetByUser(ctx context.Context, userID string) (records []repository.URLRecord, err error)
 }
 
+type Deleter interface {
+	Enqueue(userID string, ids []string)
+}
+
 type URLHandler struct {
 	repo    URLRepository
+	deleter Deleter
 	baseURL string
 }
 
-func NewURLHandler(repo URLRepository, cfg config.HandlerConfig) *URLHandler {
-	return &URLHandler{repo: repo, baseURL: cfg.BaseURL}
+func NewURLHandler(repo URLRepository, deleter Deleter, cfg config.HandlerConfig) *URLHandler {
+	return &URLHandler{repo: repo, deleter: deleter, baseURL: cfg.BaseURL}
 }
 
 func (h *URLHandler) Shorten(c *gin.Context) {
@@ -187,6 +193,10 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 	id := c.Param("id")
 
 	originalURL, err := h.repo.Get(c.Request.Context(), id)
+	if errors.Is(err, repository.ErrDeleted) {
+		c.String(http.StatusGone, "short URL deleted")
+		return
+	}
 	if errors.Is(err, repository.ErrNotFound) {
 		c.String(http.StatusBadRequest, "unknown short URL id")
 		return
@@ -233,6 +243,33 @@ func (h *URLHandler) UserURLs(c *gin.Context) {
 	}
 
 	writeJSON(c, http.StatusOK, response)
+}
+
+func (h *URLHandler) DeleteUserURLs(c *gin.Context) {
+	userID, authenticated := middleware.UserID(c)
+	if !authenticated {
+		log.Warn().Msg("deleteUserURLs: request carries no authentic user id")
+		writeJSON(c, http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var ids []string
+	if err := json.NewDecoder(c.Request.Body).Decode(&ids); err != nil {
+		log.Warn().Err(err).Msg("deleteUserURLs: failed to decode request body")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if len(ids) > maxDeleteIDs {
+		log.Warn().Int("count", len(ids)).Msg("deleteUserURLs: too many ids in a single request")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many ids: max %d per request", maxDeleteIDs)})
+		return
+	}
+
+	if len(ids) > 0 {
+		h.deleter.Enqueue(userID, ids)
+	}
+
+	c.Status(http.StatusAccepted)
 }
 
 func (h *URLHandler) shortenURL(ctx context.Context, originalURL, userID string) (string, bool, error) {

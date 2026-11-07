@@ -246,6 +246,35 @@ func TestFileRepository_PersistsUserID(t *testing.T) {
 	}
 }
 
+func TestFileRepository_PersistsDeletionAcrossRestart(t *testing.T) {
+	path := newRepoPath(t)
+
+	first := mustNewFileRepository(t, path)
+	if _, err := first.Save(context.Background(), URLRecord{ID: "4rSPg8ap", OriginalURL: yandexURL, UserID: "alice"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if err := first.MarkDeleted(context.Background(), []DeleteRecord{{ID: "4rSPg8ap", UserID: "alice"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	got := readRecords(t, path)
+	if len(got) != 2 {
+		t.Fatalf("got %d records, want 2 (the original line plus a tombstone): %+v", len(got), got)
+	}
+	if !got[1].IsDeleted {
+		t.Errorf("second record = %+v, want IsDeleted = true", got[1])
+	}
+
+	restarted := mustNewFileRepository(t, path)
+
+	if _, err := restarted.Get(context.Background(), "4rSPg8ap"); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("Get error = %v, want %v", err, ErrDeleted)
+	}
+}
+
 func TestFileRepository_LoadsRecordsWithoutUserID(t *testing.T) {
 	path := newRepoPath(t)
 	legacy := `{"uuid":"1","short_url":"4rSPg8ap","original_url":"` + yandexURL + `"}` + "\n"
