@@ -28,13 +28,16 @@ func mustToken(t *testing.T, userID string, secret string, ttl time.Duration) st
 
 // newAuthTestServer answers with the resolved user id and whether it was authenticated, so that
 // tests can assert on what the middleware put into the request context.
-func newAuthTestServer(t *testing.T) *httptest.Server {
+func newAuthTestServer(t *testing.T, extra ...gin.HandlerFunc) *httptest.Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
 
 	router := gin.New()
 	router.Use(middleware.AuthMiddleware(authSecret))
+	for _, h := range extra {
+		router.Use(h)
+	}
 	router.GET("/whoami", func(c *gin.Context) {
 		userID, authenticated := middleware.UserID(c)
 
@@ -103,6 +106,39 @@ func TestAuthMiddleware_IssuesCookieWhenAbsent(t *testing.T) {
 	}
 	if !issued.HttpOnly || issued.Path != "/" {
 		t.Errorf("cookie = %+v, want HttpOnly on path /", issued)
+	}
+}
+
+// TestAuthMiddleware_IgnoresForeignStringKeys pins the reason the context keys carry an unexported
+// type: a package that happens to use the same plain string names cannot reach the middleware's
+// entries, so it cannot overwrite them.
+func TestAuthMiddleware_IgnoresForeignStringKeys(t *testing.T) {
+	foreign := func(c *gin.Context) {
+		c.Set("userID", "someoneElse")
+		c.Set("authenticated", false)
+		c.Next()
+	}
+
+	ts := newAuthTestServer(t, foreign)
+
+	userID, authenticated, issued := whoami(t, ts, nil)
+
+	if issued == nil {
+		t.Fatal("middleware did not issue the auth cookie")
+	}
+	if userID == "someoneElse" {
+		t.Error("a foreign string key overwrote the user id in the context")
+	}
+	if !authenticated {
+		t.Error("a foreign string key overwrote the authentication flag in the context")
+	}
+
+	want, err := auth.ParseToken(issued.Value, []byte(authSecret))
+	if err != nil {
+		t.Fatalf("ParseToken failed: %v", err)
+	}
+	if userID != want {
+		t.Errorf("user id = %q, want the one from the cookie %q", userID, want)
 	}
 }
 

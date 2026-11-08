@@ -29,6 +29,15 @@ const (
 
 var shortURLPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(baseURL) + `/[a-zA-Z0-9]{8}$`)
 
+var testDeleterConfig = config.DeleterConfig{
+	Workers:       1,
+	MaxWriters:    4,
+	TaskBuffer:    1,
+	BatchSize:     100,
+	FlushInterval: time.Hour,
+	FlushTimeout:  time.Second,
+}
+
 func mustToken(t *testing.T, userID string, secret string, ttl time.Duration) string {
 	t.Helper()
 

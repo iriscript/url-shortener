@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+
+	"github.com/iriscript/url-shortener/internal/model"
 )
 
 const (
@@ -217,7 +219,7 @@ func (r *FileRepository) GetByUser(_ context.Context, userID string) ([]URLRecor
 	return records, nil
 }
 
-func (r *FileRepository) MarkDeleted(_ context.Context, records []DeleteRecord) error {
+func (r *FileRepository) MarkDeleted(_ context.Context, records []model.DeleteRecord) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

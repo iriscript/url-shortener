@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iriscript/url-shortener/internal/model"
 )
 
 const (
@@ -253,7 +255,7 @@ func TestFileRepository_PersistsDeletionAcrossRestart(t *testing.T) {
 	if _, err := first.Save(context.Background(), URLRecord{ID: "4rSPg8ap", OriginalURL: yandexURL, UserID: "alice"}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
-	if err := first.MarkDeleted(context.Background(), []DeleteRecord{{ID: "4rSPg8ap", UserID: "alice"}}); err != nil {
+	if err := first.MarkDeleted(context.Background(), []model.DeleteRecord{{ID: "4rSPg8ap", UserID: "alice"}}); err != nil {
 		t.Fatalf("MarkDeleted failed: %v", err)
 	}
 	if err := first.Close(); err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/database"
+	"github.com/iriscript/url-shortener/internal/model"
 	"github.com/iriscript/url-shortener/internal/repository"
 )
 
@@ -287,7 +288,7 @@ func TestPostgresRepository_MarkDeleted(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: id, UserID: "owner"}}); err != nil {
+	if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: id, UserID: "owner"}}); err != nil {
 		t.Fatalf("MarkDeleted failed: %v", err)
 	}
 
@@ -315,7 +316,7 @@ func TestPostgresRepository_MarkDeletedRespectsOwnership(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: id, UserID: "stranger"}}); err != nil {
+	if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: id, UserID: "stranger"}}); err != nil {
 		t.Fatalf("MarkDeleted failed: %v", err)
 	}
 
@@ -345,7 +346,7 @@ func TestPostgresRepository_GetByUserExcludesDeleted(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: "pgDelete3b", UserID: "owner"}}); err != nil {
+	if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: "pgDelete3b", UserID: "owner"}}); err != nil {
 		t.Fatalf("MarkDeleted failed: %v", err)
 	}
 

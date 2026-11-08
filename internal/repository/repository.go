@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/iriscript/url-shortener/internal/model"
 )
 
 var (
@@ -18,11 +20,6 @@ type URLRecord struct {
 	ID          string
 	OriginalURL string
 	UserID      string
-}
-
-type DeleteRecord struct {
-	ID     string
-	UserID string
 }
 
 type MemoryRepository struct {
@@ -126,7 +123,7 @@ func (r *MemoryRepository) GetByUser(_ context.Context, userID string) ([]URLRec
 	return records, nil
 }
 
-func (r *MemoryRepository) MarkDeleted(_ context.Context, records []DeleteRecord) error {
+func (r *MemoryRepository) MarkDeleted(_ context.Context, records []model.DeleteRecord) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

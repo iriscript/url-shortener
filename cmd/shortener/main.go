@@ -66,7 +66,7 @@ func run() error {
 		}()
 	}
 
-	del := deleter.New(repo)
+	del := deleter.New(repo, cfg.Deleter)
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()

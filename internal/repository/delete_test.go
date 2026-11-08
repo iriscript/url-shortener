@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/iriscript/url-shortener/internal/model"
 	"github.com/iriscript/url-shortener/internal/repository"
 )
 
@@ -15,7 +16,7 @@ type deleteRepository interface {
 	Save(ctx context.Context, rec repository.URLRecord) (string, error)
 	Get(ctx context.Context, id string) (string, error)
 	GetByUser(ctx context.Context, userID string) ([]repository.URLRecord, error)
-	MarkDeleted(ctx context.Context, records []repository.DeleteRecord) error
+	MarkDeleted(ctx context.Context, records []model.DeleteRecord) error
 }
 
 func deleteBackends(t *testing.T) map[string]deleteRepository {
@@ -42,7 +43,7 @@ func TestMarkDeleted_OwnerCanDeleteTheirURL(t *testing.T) {
 				t.Fatalf("Save failed: %v", err)
 			}
 
-			if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: "ownedId1", UserID: "owner"}}); err != nil {
+			if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: "ownedId1", UserID: "owner"}}); err != nil {
 				t.Fatalf("MarkDeleted failed: %v", err)
 			}
 
@@ -62,7 +63,7 @@ func TestMarkDeleted_RespectsOwnership(t *testing.T) {
 				t.Fatalf("Save failed: %v", err)
 			}
 
-			if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: "ownedId2", UserID: "stranger"}}); err != nil {
+			if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: "ownedId2", UserID: "stranger"}}); err != nil {
 				t.Fatalf("MarkDeleted failed: %v", err)
 			}
 
@@ -89,7 +90,7 @@ func TestMarkDeleted_ExcludesDeletedFromGetByUser(t *testing.T) {
 				t.Fatalf("Save failed: %v", err)
 			}
 
-			if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: "dropId01", UserID: "owner"}}); err != nil {
+			if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: "dropId01", UserID: "owner"}}); err != nil {
 				t.Fatalf("MarkDeleted failed: %v", err)
 			}
 
@@ -118,7 +119,7 @@ func TestMarkDeleted_AllowsReshorteningTheSameURL(t *testing.T) {
 			if _, err := repo.Save(ctx, repository.URLRecord{ID: "goneId01", OriginalURL: "https://practicum.yandex.ru/", UserID: "owner"}); err != nil {
 				t.Fatalf("Save failed: %v", err)
 			}
-			if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: "goneId01", UserID: "owner"}}); err != nil {
+			if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: "goneId01", UserID: "owner"}}); err != nil {
 				t.Fatalf("MarkDeleted failed: %v", err)
 			}
 
@@ -163,7 +164,7 @@ func TestMarkDeleted_IsSafeUnderConcurrency(t *testing.T) {
 				go func(id string) {
 					defer wg.Done()
 
-					if err := repo.MarkDeleted(ctx, []repository.DeleteRecord{{ID: id, UserID: "owner"}}); err != nil {
+					if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: id, UserID: "owner"}}); err != nil {
 						t.Errorf("MarkDeleted(%q) failed: %v", id, err)
 					}
 				}(id)

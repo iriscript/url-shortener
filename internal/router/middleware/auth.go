@@ -15,9 +15,11 @@ const (
 	authCookieTTL  = 30 * 24 * time.Hour
 )
 
+type contextKey string
+
 const (
-	contextUserID        = "userID"
-	contextAuthenticated = "authenticated"
+	contextUserID        contextKey = "userID"
+	contextAuthenticated contextKey = "authenticated"
 )
 
 func AuthMiddleware(secret string) gin.HandlerFunc {

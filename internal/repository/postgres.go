@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/iriscript/url-shortener/internal/database"
+	"github.com/iriscript/url-shortener/internal/model"
 )
 
 type PostgresRepository struct {
@@ -167,7 +168,7 @@ func (r *PostgresRepository) GetByUser(ctx context.Context, userID string) ([]UR
 	return records, nil
 }
 
-func (r *PostgresRepository) MarkDeleted(ctx context.Context, records []DeleteRecord) error {
+func (r *PostgresRepository) MarkDeleted(ctx context.Context, records []model.DeleteRecord) error {
 	if len(records) == 0 {
 		return nil
 	}

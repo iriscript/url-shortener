@@ -7,114 +7,162 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/iriscript/url-shortener/internal/repository"
-)
-
-const (
-	taskBufferSize = 1024
-	batchSize      = 100
-	flushInterval  = 10 * time.Second
-	flushTimeout   = 5 * time.Second
+	"github.com/iriscript/url-shortener/internal/config"
+	"github.com/iriscript/url-shortener/internal/model"
 )
 
 type Repository interface {
-	MarkDeleted(ctx context.Context, records []repository.DeleteRecord) error
+	MarkDeleted(ctx context.Context, records []model.DeleteRecord) error
 }
 
 type Deleter struct {
-	repo          Repository
-	tasks         chan repository.DeleteRecord
-	done          chan struct{}
-	batchSize     int
-	flushInterval time.Duration
-	flushTimeout  time.Duration
+	repo    Repository
+	cfg     config.DeleterConfig
+	tasks   chan model.DeleteRecord
+	batches chan []model.DeleteRecord
+	slots   chan struct{}
+	done    chan struct{}
+	wg      sync.WaitGroup
+	writers sync.WaitGroup
 
 	mu     sync.RWMutex
 	closed bool
 }
 
-func New(repo Repository) *Deleter {
-	return newWithConfig(repo, taskBufferSize, batchSize, flushInterval, flushTimeout)
-}
-
-func newWithConfig(repo Repository, bufferSize, batch int, interval, timeout time.Duration) *Deleter {
+func New(repo Repository, cfg config.DeleterConfig) *Deleter {
 	d := &Deleter{
-		repo:          repo,
-		tasks:         make(chan repository.DeleteRecord, bufferSize),
-		done:          make(chan struct{}),
-		batchSize:     batch,
-		flushInterval: interval,
-		flushTimeout:  timeout,
+		repo:    repo,
+		cfg:     cfg,
+		tasks:   make(chan model.DeleteRecord, cfg.TaskBuffer),
+		batches: make(chan []model.DeleteRecord, cfg.Workers),
+		slots:   make(chan struct{}, cfg.MaxWriters),
+		done:    make(chan struct{}),
 	}
 
-	go d.run()
+	d.wg.Add(cfg.Workers)
+	for range cfg.Workers {
+		go d.run()
+	}
+
+	go d.batch()
+
+	go func() {
+		d.wg.Wait()
+		close(d.done)
+	}()
 
 	return d
 }
 
 func (d *Deleter) Enqueue(userID string, ids []string) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	if d.closed {
-		return
-	}
-
+	records := make([]model.DeleteRecord, 0, len(ids))
 	for _, id := range ids {
 		if id == "" {
 			continue
 		}
 
-		d.tasks <- repository.DeleteRecord{ID: id, UserID: userID}
+		records = append(records, model.DeleteRecord{ID: id, UserID: userID})
+	}
+
+	if len(records) == 0 {
+		return
+	}
+
+	d.slots <- struct{}{}
+
+	d.mu.RLock()
+	if d.closed {
+		d.mu.RUnlock()
+		<-d.slots
+
+		return
+	}
+	d.writers.Add(1)
+	d.mu.RUnlock()
+
+	go d.write(records)
+}
+
+func (d *Deleter) write(records []model.DeleteRecord) {
+	defer d.writers.Done()
+	defer func() { <-d.slots }()
+
+	for _, rec := range records {
+		d.tasks <- rec
 	}
 }
 
-func (d *Deleter) run() {
-	ticker := time.NewTicker(d.flushInterval)
+func (d *Deleter) batch() {
+	ticker := time.NewTicker(d.cfg.FlushInterval)
 	defer ticker.Stop()
+	defer close(d.batches)
 
-	buf := make([]repository.DeleteRecord, 0, d.batchSize)
+	buf := make([]model.DeleteRecord, 0, d.cfg.BatchSize)
 
 	for {
 		select {
 		case rec, ok := <-d.tasks:
 			if !ok {
-				d.flush(buf)
-				close(d.done)
+				d.send(buf)
 				return
 			}
 
 			buf = append(buf, rec)
-			if len(buf) >= d.batchSize {
-				buf = d.flush(buf)
+			if len(buf) >= d.cfg.BatchSize {
+				buf = d.send(buf)
 			}
 
 		case <-ticker.C:
-			buf = d.flush(buf)
+			buf = d.send(buf)
 		}
 	}
 }
 
-func (d *Deleter) flush(buf []repository.DeleteRecord) []repository.DeleteRecord {
+func (d *Deleter) send(buf []model.DeleteRecord) []model.DeleteRecord {
 	if len(buf) == 0 {
 		return buf
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), d.flushTimeout)
+	d.batches <- buf
+
+	return make([]model.DeleteRecord, 0, d.cfg.BatchSize)
+}
+
+func (d *Deleter) run() {
+	defer d.wg.Done()
+
+	for buf := range d.batches {
+		d.flush(buf)
+	}
+}
+
+func (d *Deleter) flush(buf []model.DeleteRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), d.cfg.FlushTimeout)
 	defer cancel()
 
 	if err := d.repo.MarkDeleted(ctx, buf); err != nil {
 		log.Error().Err(err).Int("count", len(buf)).Msg("deleter: failed to flush the delete batch")
 	}
-
-	return buf[:0]
 }
 
 func (d *Deleter) Stop(ctx context.Context) error {
 	d.mu.Lock()
 	d.closed = true
-	close(d.tasks)
 	d.mu.Unlock()
+
+	drained := make(chan struct{})
+	go func() {
+		d.writers.Wait()
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	close(d.tasks)
 
 	select {
 	case <-d.done:
