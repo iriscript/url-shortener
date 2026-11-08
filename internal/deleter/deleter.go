@@ -25,7 +25,7 @@ type Deleter struct {
 	wg      sync.WaitGroup
 	writers sync.WaitGroup
 
-	mu     sync.RWMutex
+	mu     sync.Mutex
 	closed bool
 }
 
@@ -70,15 +70,15 @@ func (d *Deleter) Enqueue(userID string, ids []string) {
 
 	d.slots <- struct{}{}
 
-	d.mu.RLock()
+	d.mu.Lock()
 	if d.closed {
-		d.mu.RUnlock()
+		d.mu.Unlock()
 		<-d.slots
 
 		return
 	}
 	d.writers.Add(1)
-	d.mu.RUnlock()
+	d.mu.Unlock()
 
 	go d.write(records)
 }
