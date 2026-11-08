@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -13,6 +14,17 @@ import (
 )
 
 const authSecret = "test-secret"
+
+func mustToken(t *testing.T, userID string, secret string, ttl time.Duration) string {
+	t.Helper()
+
+	token, err := auth.NewToken(userID, []byte(secret), ttl)
+	if err != nil {
+		t.Fatalf("NewToken failed: %v", err)
+	}
+
+	return token
+}
 
 // newAuthTestServer answers with the resolved user id and whether it was authenticated, so that
 // tests can assert on what the middleware put into the request context.
@@ -82,7 +94,7 @@ func TestAuthMiddleware_IssuesCookieWhenAbsent(t *testing.T) {
 		t.Fatal("middleware did not issue the auth cookie")
 	}
 
-	signedID, err := auth.Parse(issued.Value, []byte(authSecret))
+	signedID, err := auth.ParseToken(issued.Value, []byte(authSecret))
 	if err != nil {
 		t.Fatalf("the issued cookie does not pass its own check: %v", err)
 	}
@@ -111,7 +123,7 @@ func TestAuthMiddleware_ReusesAuthenticCookie(t *testing.T) {
 		t.Errorf("middleware re-issued the cookie %+v, want the existing one kept", reissued)
 	}
 
-	want, err := auth.Parse(issued.Value, []byte(authSecret))
+	want, err := auth.ParseToken(issued.Value, []byte(authSecret))
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -120,16 +132,16 @@ func TestAuthMiddleware_ReusesAuthenticCookie(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_ReissuesTamperedCookie(t *testing.T) {
+func TestAuthMiddleware_ReissuesUntrustedCookie(t *testing.T) {
 	ts := newAuthTestServer(t)
 
 	tests := []struct {
 		name  string
 		value string
 	}{
-		{name: "not signed", value: "someUserID"},
-		{name: "wrong signature", value: "someUserID.0f0f0f0f"},
-		{name: "signed with another secret", value: auth.Sign("someUserID", []byte("another-secret"))},
+		{name: "not a token", value: "someUserID"},
+		{name: "signed with another secret", value: mustToken(t, "someUserID", "another-secret", time.Hour)},
+		{name: "expired", value: mustToken(t, "someUserID", authSecret, -time.Hour)},
 	}
 
 	for _, tt := range tests {
@@ -145,7 +157,7 @@ func TestAuthMiddleware_ReissuesTamperedCookie(t *testing.T) {
 			if issued == nil {
 				t.Fatal("middleware did not re-issue the auth cookie")
 			}
-			if _, err := auth.Parse(issued.Value, []byte(authSecret)); err != nil {
+			if _, err := auth.ParseToken(issued.Value, []byte(authSecret)); err != nil {
 				t.Errorf("the re-issued cookie does not pass its own check: %v", err)
 			}
 		})

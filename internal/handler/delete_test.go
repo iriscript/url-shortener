@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iriscript/url-shortener/internal/auth"
 	"github.com/iriscript/url-shortener/internal/deleter"
 	"github.com/iriscript/url-shortener/internal/repository"
 )
@@ -16,9 +15,9 @@ func TestURLHandler_DeleteUserURLs_RejectsCookieWithoutUserID(t *testing.T) {
 		name  string
 		value string
 	}{
-		{name: "not signed", value: "someUserID"},
-		{name: "wrong signature", value: "someUserID.0f0f0f0f"},
-		{name: "signed with another secret", value: auth.Sign("someUserID", []byte("another-secret"))},
+		{name: "not a token", value: "someUserID"},
+		{name: "signed with another secret", value: mustToken(t, "someUserID", "another-secret", time.Hour)},
+		{name: "expired", value: mustToken(t, "someUserID", testSecret, -time.Hour)},
 	}
 
 	for _, tt := range tests {

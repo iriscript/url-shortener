@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/iriscript/url-shortener/internal/auth"
@@ -11,7 +12,7 @@ import (
 
 const (
 	authCookieName = "auth"
-	authCookieTTL  = 30 * 24 * 60 * 60 // seconds
+	authCookieTTL  = 30 * 24 * time.Hour
 )
 
 const (
@@ -46,11 +47,11 @@ func UserID(c *gin.Context) (string, bool) {
 func resolveUser(c *gin.Context, key []byte) (string, bool, error) {
 	cookie, err := c.Request.Cookie(authCookieName)
 	if err == nil {
-		userID, parseErr := auth.Parse(cookie.Value, key)
+		userID, parseErr := auth.ParseToken(cookie.Value, key)
 		if parseErr == nil {
 			return userID, true, nil
 		}
-		if !errors.Is(parseErr, auth.ErrInvalidCookie) {
+		if !errors.Is(parseErr, auth.ErrInvalidToken) {
 			return "", false, parseErr
 		}
 
@@ -78,11 +79,16 @@ func issue(c *gin.Context, key []byte) (string, error) {
 		return "", err
 	}
 
+	token, err := auth.NewToken(userID, key, authCookieTTL)
+	if err != nil {
+		return "", err
+	}
+
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     authCookieName,
-		Value:    auth.Sign(userID, key),
+		Value:    token,
 		Path:     "/",
-		MaxAge:   authCookieTTL,
+		MaxAge:   int(authCookieTTL.Seconds()),
 		HttpOnly: true,
 	})
 

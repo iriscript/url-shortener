@@ -10,8 +10,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/iriscript/url-shortener/internal/auth"
 	"github.com/iriscript/url-shortener/internal/model"
 	"github.com/iriscript/url-shortener/internal/router"
 
@@ -26,6 +28,17 @@ const (
 )
 
 var shortURLPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(baseURL) + `/[a-zA-Z0-9]{8}$`)
+
+func mustToken(t *testing.T, userID string, secret string, ttl time.Duration) string {
+	t.Helper()
+
+	token, err := auth.NewToken(userID, []byte(secret), ttl)
+	if err != nil {
+		t.Fatalf("NewToken failed: %v", err)
+	}
+
+	return token
+}
 
 type mockRepository struct {
 	saveFunc      func(ctx context.Context, rec repository.URLRecord) (string, error)

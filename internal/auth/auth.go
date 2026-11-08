@@ -1,21 +1,20 @@
 package auth
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
-const (
-	userIDSize = 16
-	separator  = "."
-)
+const userIDSize = 16
 
-var ErrInvalidCookie = errors.New("cookie is not authentic")
+var signingMethod = jwt.SigningMethodHS256
+
+var ErrInvalidToken = errors.New("token is not authentic")
 
 func NewUserID() (string, error) {
 	b := make([]byte, userIDSize)
@@ -26,30 +25,37 @@ func NewUserID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func Sign(userID string, secret []byte) string {
-	return userID + separator + hex.EncodeToString(sign(userID, secret))
-}
+func NewToken(userID string, secret []byte, ttl time.Duration) (string, error) {
+	now := time.Now()
 
-func Parse(value string, secret []byte) (string, error) {
-	userID, signature, found := strings.Cut(value, separator)
-	if !found || userID == "" {
-		return "", ErrInvalidCookie
-	}
+	token := jwt.NewWithClaims(signingMethod, jwt.RegisteredClaims{
+		Subject:   userID,
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+	})
 
-	got, err := hex.DecodeString(signature)
+	signed, err := token.SignedString(secret)
 	if err != nil {
-		return "", ErrInvalidCookie
-	}
-	if !hmac.Equal(got, sign(userID, secret)) {
-		return "", ErrInvalidCookie
+		return "", fmt.Errorf("failed to sign the token: %w", err)
 	}
 
-	return userID, nil
+	return signed, nil
 }
 
-func sign(userID string, secret []byte) []byte {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(userID))
+func ParseToken(value string, secret []byte) (string, error) {
+	var claims jwt.RegisteredClaims
 
-	return mac.Sum(nil)
+	_, err := jwt.ParseWithClaims(value, &claims,
+		func(*jwt.Token) (any, error) { return secret, nil },
+		jwt.WithValidMethods([]string{signingMethod.Alg()}),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		return "", ErrInvalidToken
+	}
+	if claims.Subject == "" {
+		return "", ErrInvalidToken
+	}
+
+	return claims.Subject, nil
 }
