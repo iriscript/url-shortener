@@ -2,6 +2,7 @@ package deleter
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -29,7 +30,11 @@ type Deleter struct {
 	closed bool
 }
 
-func New(repo Repository, cfg config.DeleterConfig) *Deleter {
+func New(repo Repository, cfg config.DeleterConfig) (*Deleter, error) {
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	d := &Deleter{
 		repo:    repo,
 		cfg:     cfg,
@@ -51,7 +56,30 @@ func New(repo Repository, cfg config.DeleterConfig) *Deleter {
 		close(d.done)
 	}()
 
-	return d
+	return d, nil
+}
+
+func validateConfig(cfg config.DeleterConfig) error {
+	if cfg.Workers <= 0 {
+		return fmt.Errorf("deleter: workers must be positive, got %d", cfg.Workers)
+	}
+	if cfg.MaxWriters <= 0 {
+		return fmt.Errorf("deleter: max writers must be positive, got %d", cfg.MaxWriters)
+	}
+	if cfg.TaskBuffer < 0 {
+		return fmt.Errorf("deleter: task buffer must not be negative, got %d", cfg.TaskBuffer)
+	}
+	if cfg.BatchSize <= 0 {
+		return fmt.Errorf("deleter: batch size must be positive, got %d", cfg.BatchSize)
+	}
+	if cfg.FlushInterval <= 0 {
+		return fmt.Errorf("deleter: flush interval must be positive, got %s", cfg.FlushInterval)
+	}
+	if cfg.FlushTimeout <= 0 {
+		return fmt.Errorf("deleter: flush timeout must be positive, got %s", cfg.FlushTimeout)
+	}
+
+	return nil
 }
 
 func (d *Deleter) Enqueue(userID string, ids []string) {

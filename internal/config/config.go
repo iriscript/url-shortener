@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"os"
 	"time"
 
@@ -157,28 +156,5 @@ func parse(args []string, environment map[string]string) (*Config, error) {
 		return &cfg, flagErr
 	}
 
-	return &cfg, cfg.Deleter.validate()
-}
-
-func (c DeleterConfig) validate() error {
-	if c.Workers <= 0 {
-		return fmt.Errorf("config: deleter workers must be positive, got %d", c.Workers)
-	}
-	if c.MaxWriters <= 0 {
-		return fmt.Errorf("config: deleter max writers must be positive, got %d", c.MaxWriters)
-	}
-	if c.TaskBuffer < 0 {
-		return fmt.Errorf("config: deleter task buffer must not be negative, got %d", c.TaskBuffer)
-	}
-	if c.BatchSize <= 0 {
-		return fmt.Errorf("config: deleter batch size must be positive, got %d", c.BatchSize)
-	}
-	if c.FlushInterval <= 0 {
-		return fmt.Errorf("config: deleter flush interval must be positive, got %s", c.FlushInterval)
-	}
-	if c.FlushTimeout <= 0 {
-		return fmt.Errorf("config: deleter flush timeout must be positive, got %s", c.FlushTimeout)
-	}
-
-	return nil
+	return &cfg, nil
 }

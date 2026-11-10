@@ -230,40 +230,6 @@ func TestParse_DeleterPriority(t *testing.T) {
 	}
 }
 
-func TestParse_RejectsUnusableDeleterValues(t *testing.T) {
-	tests := []struct {
-		name        string
-		args        []string
-		environment map[string]string
-	}{
-		{name: "zero workers from a flag", args: []string{"-deleter-workers", "0"}},
-		{name: "zero workers from the environment", environment: map[string]string{"DELETER_WORKERS": "0"}},
-		{name: "negative workers", args: []string{"-deleter-workers", "-1"}},
-		{name: "zero max writers", args: []string{"-deleter-max-writers", "0"}},
-		{name: "zero max writers from the environment", environment: map[string]string{"DELETER_MAX_WRITERS": "0"}},
-		{name: "negative max writers", args: []string{"-deleter-max-writers", "-1"}},
-		{name: "negative task buffer", args: []string{"-deleter-task-buffer", "-1"}},
-		{name: "zero batch size", args: []string{"-deleter-batch-size", "0"}},
-		{name: "zero batch size from the environment", environment: map[string]string{"DELETER_BATCH_SIZE": "0"}},
-		{name: "zero flush interval", args: []string{"-deleter-flush-interval", "0s"}},
-		{name: "zero flush interval from the environment", environment: map[string]string{"DELETER_FLUSH_INTERVAL": "0s"}},
-		{name: "negative flush timeout", args: []string{"-deleter-flush-timeout", "-1s"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			environment := tt.environment
-			if environment == nil {
-				environment = map[string]string{}
-			}
-
-			if _, err := parse(tt.args, environment); err == nil {
-				t.Errorf("parse(%v, %v) returned nil error, want a rejection", tt.args, environment)
-			}
-		})
-	}
-}
-
 func TestParse_ZeroIsAValueNotAnAbsentSetting(t *testing.T) {
 	tests := []struct {
 		name        string

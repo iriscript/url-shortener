@@ -100,9 +100,20 @@ func stopDeleter(t *testing.T, d *Deleter) {
 	})
 }
 
+func newDeleter(t *testing.T, repo Repository, cfg config.DeleterConfig) *Deleter {
+	t.Helper()
+
+	d, err := New(repo, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	return d
+}
+
 func TestDeleter_FlushesOnBatchSize(t *testing.T) {
 	repo := &fakeRepo{calls: make(chan []model.DeleteRecord, 1)}
-	d := New(repo, singleWorker(3, time.Hour, time.Second))
+	d := newDeleter(t, repo, singleWorker(3, time.Hour, time.Second))
 	stopDeleter(t, d)
 
 	d.Enqueue("user1", []string{"a", "b", "c"})
@@ -119,7 +130,7 @@ func TestDeleter_FlushesOnBatchSize(t *testing.T) {
 
 func TestDeleter_FlushesOnTimer(t *testing.T) {
 	repo := &fakeRepo{calls: make(chan []model.DeleteRecord, 1)}
-	d := New(repo, singleWorker(100, 20*time.Millisecond, time.Second))
+	d := newDeleter(t, repo, singleWorker(100, 20*time.Millisecond, time.Second))
 	stopDeleter(t, d)
 
 	d.Enqueue("user1", []string{"a"})
@@ -136,7 +147,7 @@ func TestDeleter_FlushesOnTimer(t *testing.T) {
 
 func TestDeleter_EnqueueSkipsEmptyIDs(t *testing.T) {
 	repo := &fakeRepo{calls: make(chan []model.DeleteRecord, 1)}
-	d := New(repo, singleWorker(1, time.Hour, time.Second))
+	d := newDeleter(t, repo, singleWorker(1, time.Hour, time.Second))
 	stopDeleter(t, d)
 
 	d.Enqueue("user1", []string{"", "a"})
@@ -153,7 +164,7 @@ func TestDeleter_EnqueueSkipsEmptyIDs(t *testing.T) {
 
 func TestDeleter_StopFlushesRemaining(t *testing.T) {
 	repo := &fakeRepo{calls: make(chan []model.DeleteRecord, 1)}
-	d := New(repo, singleWorker(100, time.Hour, time.Second))
+	d := newDeleter(t, repo, singleWorker(100, time.Hour, time.Second))
 
 	d.Enqueue("user1", []string{"a", "b"})
 
@@ -175,7 +186,7 @@ func TestDeleter_StopFlushesRemaining(t *testing.T) {
 
 func TestDeleter_StopRespectsContextDeadline(t *testing.T) {
 	repo := &fakeRepo{delay: 200 * time.Millisecond}
-	d := New(repo, singleWorker(100, time.Hour, time.Second))
+	d := newDeleter(t, repo, singleWorker(100, time.Hour, time.Second))
 
 	d.Enqueue("user1", []string{"a"})
 
@@ -194,7 +205,7 @@ func TestDeleter_EnqueueDoesNotBlockOnAStalledPipeline(t *testing.T) {
 	repo, release := stalledRepo()
 	defer release()
 
-	d := New(repo, config.DeleterConfig{
+	d := newDeleter(t, repo, config.DeleterConfig{
 		Workers:       1,
 		MaxWriters:    4,
 		TaskBuffer:    1,
@@ -224,7 +235,7 @@ func TestDeleter_LimitsWriterGoroutines(t *testing.T) {
 	repo, release := stalledRepo()
 	defer release()
 
-	d := New(repo, config.DeleterConfig{
+	d := newDeleter(t, repo, config.DeleterConfig{
 		Workers:       1,
 		MaxWriters:    maxWriters,
 		TaskBuffer:    1,
@@ -271,7 +282,7 @@ func TestDeleter_StopWaitsForWriters(t *testing.T) {
 	)
 
 	repo := &fakeRepo{}
-	d := New(repo, config.DeleterConfig{
+	d := newDeleter(t, repo, config.DeleterConfig{
 		Workers:       2,
 		MaxWriters:    4,
 		TaskBuffer:    1,
@@ -319,7 +330,7 @@ func TestDeleter_WorkersFlushInParallel(t *testing.T) {
 	const workers = 4
 
 	repo := &fakeRepo{delay: 100 * time.Millisecond}
-	d := New(repo, config.DeleterConfig{
+	d := newDeleter(t, repo, config.DeleterConfig{
 		Workers:       workers,
 		MaxWriters:    4,
 		TaskBuffer:    1,
@@ -343,7 +354,7 @@ func TestDeleter_WorkersFlushInParallel(t *testing.T) {
 
 func TestDeleter_BatchesDoNotShareBuffer(t *testing.T) {
 	repo := &fakeRepo{delay: 50 * time.Millisecond}
-	d := New(repo, config.DeleterConfig{
+	d := newDeleter(t, repo, config.DeleterConfig{
 		Workers:       1,
 		MaxWriters:    4,
 		TaskBuffer:    1,
@@ -375,5 +386,56 @@ func TestDeleter_BatchesDoNotShareBuffer(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("workers saw %v, want %v", got, want)
 		}
+	}
+}
+
+func TestNew_RejectsUnusableConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(cfg *config.DeleterConfig)
+	}{
+		{name: "zero workers", mutate: func(cfg *config.DeleterConfig) { cfg.Workers = 0 }},
+		{name: "negative workers", mutate: func(cfg *config.DeleterConfig) { cfg.Workers = -1 }},
+		{name: "zero max writers", mutate: func(cfg *config.DeleterConfig) { cfg.MaxWriters = 0 }},
+		{name: "negative max writers", mutate: func(cfg *config.DeleterConfig) { cfg.MaxWriters = -1 }},
+		{name: "negative task buffer", mutate: func(cfg *config.DeleterConfig) { cfg.TaskBuffer = -1 }},
+		{name: "zero batch size", mutate: func(cfg *config.DeleterConfig) { cfg.BatchSize = 0 }},
+		{name: "zero flush interval", mutate: func(cfg *config.DeleterConfig) { cfg.FlushInterval = 0 }},
+		{name: "negative flush timeout", mutate: func(cfg *config.DeleterConfig) { cfg.FlushTimeout = -time.Second }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := singleWorker(100, time.Hour, time.Second)
+			tt.mutate(&cfg)
+
+			d, err := New(&fakeRepo{}, cfg)
+			if err == nil {
+				t.Fatalf("New(%+v) returned nil error, want a rejection", cfg)
+			}
+			if d != nil {
+				t.Errorf("New returned a deleter alongside an error, want nil")
+			}
+		})
+	}
+}
+
+func TestNew_AcceptsZeroTaskBuffer(t *testing.T) {
+	cfg := singleWorker(1, time.Hour, time.Second)
+	cfg.TaskBuffer = 0
+
+	repo := &fakeRepo{calls: make(chan []model.DeleteRecord, 1)}
+	d := newDeleter(t, repo, cfg)
+	stopDeleter(t, d)
+
+	d.Enqueue("user1", []string{"a"})
+
+	select {
+	case batch := <-repo.calls:
+		if len(batch) != 1 {
+			t.Fatalf("got batch of %d records, want 1", len(batch))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("flush did not happen in time")
 	}
 }

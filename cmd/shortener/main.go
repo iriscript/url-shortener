@@ -66,7 +66,10 @@ func run() error {
 		}()
 	}
 
-	del := deleter.New(repo, cfg.Deleter)
+	del, err := deleter.New(repo, cfg.Deleter)
+	if err != nil {
+		return fmt.Errorf("failed to init deleter: %w", err)
+	}
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()

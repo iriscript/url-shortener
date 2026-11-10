@@ -163,7 +163,10 @@ func TestURLHandler_DeleteUserURLs_EmptyArray(t *testing.T) {
 
 func TestURLHandler_DeleteUserURLs_RoundTrip(t *testing.T) {
 	repo := repository.NewMemoryRepository()
-	del := deleter.New(repo, testDeleterConfig)
+	del, err := deleter.New(repo, testDeleterConfig)
+	if err != nil {
+		t.Fatalf("deleter.New failed: %v", err)
+	}
 
 	client := newTestServerWithDeleter(t, repo, del)
 
