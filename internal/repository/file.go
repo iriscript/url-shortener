@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+
+	"github.com/iriscript/url-shortener/internal/model"
 )
 
 const (
@@ -21,12 +23,17 @@ type record struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
+	UserID      string `json:"user_id,omitempty"`
+	IsDeleted   bool   `json:"is_deleted,omitempty"`
 }
 
 type FileRepository struct {
 	mu      sync.Mutex
 	index   map[string]string
 	byURL   map[string]string
+	byUser  map[string][]string
+	owner   map[string]string
+	deleted map[string]struct{}
 	count   int
 	path    string
 	file    *os.File
@@ -39,9 +46,12 @@ func NewFileRepository(path string) (*FileRepository, error) {
 	}
 
 	r := &FileRepository{
-		index: make(map[string]string),
-		byURL: make(map[string]string),
-		path:  path,
+		index:   make(map[string]string),
+		byURL:   make(map[string]string),
+		byUser:  make(map[string][]string),
+		owner:   make(map[string]string),
+		deleted: make(map[string]struct{}),
+		path:    path,
 	}
 
 	if err := r.load(); err != nil {
@@ -80,28 +90,27 @@ func (r *FileRepository) load() error {
 			return fmt.Errorf("failed to parse storage file: %w", err)
 		}
 
-		r.index[rec.ShortURL] = rec.OriginalURL
-		r.byURL[rec.OriginalURL] = rec.ShortURL
+		r.indexRecord(rec)
 		r.count++
 	}
 }
 
-func (r *FileRepository) Save(_ context.Context, id, originalURL string) (string, error) {
+func (r *FileRepository) Save(_ context.Context, rec URLRecord) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if existingID, exists := r.byURL[originalURL]; exists {
+	if existingID, exists := r.byURL[rec.OriginalURL]; exists {
 		return existingID, ErrURLConflict
 	}
-	if _, exists := r.index[id]; exists {
+	if _, exists := r.index[rec.ID]; exists {
 		return "", ErrIDConflict
 	}
 
-	if err := r.store(id, originalURL); err != nil {
+	if err := r.store(rec); err != nil {
 		return "", err
 	}
 
-	return id, nil
+	return rec.ID, nil
 }
 
 func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) ([]URLRecord, error) {
@@ -114,7 +123,7 @@ func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) ([]UR
 
 	for i, rec := range records {
 		if existingID, exists := r.byURL[rec.OriginalURL]; exists {
-			stored[i] = URLRecord{ID: existingID, OriginalURL: rec.OriginalURL}
+			stored[i] = URLRecord{ID: existingID, OriginalURL: rec.OriginalURL, UserID: rec.UserID}
 			continue
 		}
 		if _, exists := r.index[rec.ID]; exists {
@@ -130,7 +139,7 @@ func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) ([]UR
 	}
 
 	for _, i := range fresh {
-		if err := r.store(stored[i].ID, stored[i].OriginalURL); err != nil {
+		if err := r.store(stored[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -138,27 +147,53 @@ func (r *FileRepository) SaveBatch(_ context.Context, records []URLRecord) ([]UR
 	return stored, nil
 }
 
-func (r *FileRepository) store(id, originalURL string) error {
-	rec := record{
+func (r *FileRepository) store(rec URLRecord) error {
+	line := record{
 		UUID:        strconv.Itoa(r.count + 1),
-		ShortURL:    id,
-		OriginalURL: originalURL,
+		ShortURL:    rec.ID,
+		OriginalURL: rec.OriginalURL,
+		UserID:      rec.UserID,
 	}
 
-	if err := r.append(rec); err != nil {
+	if err := r.append(line); err != nil {
 		return err
 	}
 
-	r.index[id] = originalURL
-	r.byURL[originalURL] = id
+	r.indexRecord(line)
 	r.count++
 
 	return nil
 }
 
+func (r *FileRepository) indexRecord(rec record) {
+	if rec.IsDeleted {
+		r.deleted[rec.ShortURL] = struct{}{}
+
+		if originalURL, ok := r.index[rec.ShortURL]; ok {
+			if r.byURL[originalURL] == rec.ShortURL {
+				delete(r.byURL, originalURL)
+			}
+			delete(r.index, rec.ShortURL)
+		}
+
+		return
+	}
+
+	r.index[rec.ShortURL] = rec.OriginalURL
+	r.byURL[rec.OriginalURL] = rec.ShortURL
+	if rec.UserID != "" {
+		r.byUser[rec.UserID] = append(r.byUser[rec.UserID], rec.ShortURL)
+		r.owner[rec.ShortURL] = rec.UserID
+	}
+}
+
 func (r *FileRepository) Get(_ context.Context, id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if _, deleted := r.deleted[id]; deleted {
+		return "", ErrDeleted
+	}
 
 	originalURL, ok := r.index[id]
 	if !ok {
@@ -166,6 +201,53 @@ func (r *FileRepository) Get(_ context.Context, id string) (string, error) {
 	}
 
 	return originalURL, nil
+}
+
+func (r *FileRepository) GetByUser(_ context.Context, userID string) ([]URLRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ids := r.byUser[userID]
+	records := make([]URLRecord, 0, len(ids))
+	for _, id := range ids {
+		if _, deleted := r.deleted[id]; deleted {
+			continue
+		}
+		records = append(records, URLRecord{ID: id, OriginalURL: r.index[id], UserID: userID})
+	}
+
+	return records, nil
+}
+
+func (r *FileRepository) MarkDeleted(_ context.Context, records []model.DeleteRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, rec := range records {
+		owner, ok := r.owner[rec.ID]
+		if !ok || owner != rec.UserID {
+			continue
+		}
+		if _, deleted := r.deleted[rec.ID]; deleted {
+			continue
+		}
+
+		line := record{
+			UUID:      strconv.Itoa(r.count + 1),
+			ShortURL:  rec.ID,
+			UserID:    rec.UserID,
+			IsDeleted: true,
+		}
+
+		if err := r.append(line); err != nil {
+			return err
+		}
+
+		r.indexRecord(line)
+		r.count++
+	}
+
+	return nil
 }
 
 func (r *FileRepository) append(rec record) error {

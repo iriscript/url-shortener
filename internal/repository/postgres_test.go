@@ -8,6 +8,7 @@ import (
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/database"
+	"github.com/iriscript/url-shortener/internal/model"
 	"github.com/iriscript/url-shortener/internal/repository"
 )
 
@@ -52,7 +53,7 @@ func TestPostgresRepository_SaveAndGet(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
 	})
 
-	if _, err := repo.Save(ctx, id, originalURL); err != nil {
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: originalURL}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -80,11 +81,11 @@ func TestPostgresRepository_SaveReturnsIDConflict(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
 	})
 
-	if _, err := repo.Save(ctx, id, originalURL); err != nil {
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: originalURL}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	_, err := repo.Save(ctx, id, "https://ya.ru/")
+	_, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: "https://ya.ru/"})
 	if !errors.Is(err, repository.ErrIDConflict) {
 		t.Errorf("Save error = %v, want %v", err, repository.ErrIDConflict)
 	}
@@ -132,7 +133,7 @@ func TestPostgresRepository_SaveBatchIsAtomicOnConflict(t *testing.T) {
 			`DELETE FROM short_urls WHERE short_id LIKE 'pgAtomic%'`)
 	})
 
-	if _, err := repo.Save(ctx, "pgAtomic1", "https://practicum.yandex.ru/"); err != nil {
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: "pgAtomic1", OriginalURL: "https://practicum.yandex.ru/"}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -162,12 +163,12 @@ func TestPostgresRepository_SaveReturnsExistingIDForKnownURL(t *testing.T) {
 			`DELETE FROM short_urls WHERE original_url = $1`, originalURL)
 	})
 
-	firstID, err := repo.Save(ctx, "pgKnown1", originalURL)
+	firstID, err := repo.Save(ctx, repository.URLRecord{ID: "pgKnown1", OriginalURL: originalURL})
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	secondID, err := repo.Save(ctx, "pgKnown2", originalURL)
+	secondID, err := repo.Save(ctx, repository.URLRecord{ID: "pgKnown2", OriginalURL: originalURL})
 	if !errors.Is(err, repository.ErrURLConflict) {
 		t.Fatalf("Save error = %v, want %v", err, repository.ErrURLConflict)
 	}
@@ -196,7 +197,7 @@ func TestPostgresRepository_SaveBatchReusesExistingIDForKnownURL(t *testing.T) {
 			`DELETE FROM short_urls WHERE original_url IN ($1, $2)`, knownURL, freshURL)
 	})
 
-	knownID, err := repo.Save(ctx, "pgReuse1", knownURL)
+	knownID, err := repo.Save(ctx, repository.URLRecord{ID: "pgReuse1", OriginalURL: knownURL})
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestMigrate_DeduplicatesExistingURLs(t *testing.T) {
 		t.Fatalf("found %d leftover rows for the test URL, want 0", count)
 	}
 
-	if _, err := repository.NewPostgresRepository(db).Save(ctx, "pgDedup1", originalURL); err != nil {
+	if _, err := repository.NewPostgresRepository(db).Save(ctx, repository.URLRecord{ID: "pgDedup1", OriginalURL: originalURL}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -265,5 +266,97 @@ func TestPostgresRepository_GetUnknownID(t *testing.T) {
 
 	if _, err := repo.Get(ctx, "noSuchID"); !errors.Is(err, repository.ErrNotFound) {
 		t.Error("Get found a URL for an unknown id")
+	}
+}
+
+func TestPostgresRepository_MarkDeleted(t *testing.T) {
+	const (
+		id          = "pgDelete1"
+		originalURL = "https://practicum.yandex.ru/"
+	)
+
+	ctx := t.Context()
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
+	})
+
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: originalURL, UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: id, UserID: "owner"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+
+	if _, err := repo.Get(ctx, id); !errors.Is(err, repository.ErrDeleted) {
+		t.Errorf("Get error = %v, want %v", err, repository.ErrDeleted)
+	}
+}
+
+func TestPostgresRepository_MarkDeletedRespectsOwnership(t *testing.T) {
+	const (
+		id          = "pgDelete2"
+		originalURL = "https://ya.ru/"
+	)
+
+	ctx := t.Context()
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id = $1`, id)
+	})
+
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: id, OriginalURL: originalURL, UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: id, UserID: "stranger"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+
+	got, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get failed: %v, want the url to still be reachable", err)
+	}
+	if got != originalURL {
+		t.Errorf("Get = %q, want %q", got, originalURL)
+	}
+}
+
+func TestPostgresRepository_GetByUserExcludesDeleted(t *testing.T) {
+	ctx := t.Context()
+	db := newTestDB(t)
+	pool := db.Pool()
+	repo := repository.NewPostgresRepository(db)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM short_urls WHERE short_id LIKE 'pgDelete3%'`)
+	})
+
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: "pgDelete3a", OriginalURL: "https://go.dev/", UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if _, err := repo.Save(ctx, repository.URLRecord{ID: "pgDelete3b", OriginalURL: "https://golang.org/", UserID: "owner"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if err := repo.MarkDeleted(ctx, []model.DeleteRecord{{ID: "pgDelete3b", UserID: "owner"}}); err != nil {
+		t.Fatalf("MarkDeleted failed: %v", err)
+	}
+
+	records, err := repo.GetByUser(ctx, "owner")
+	if err != nil {
+		t.Fatalf("GetByUser failed: %v", err)
+	}
+	for _, rec := range records {
+		if rec.ID == "pgDelete3b" {
+			t.Errorf("GetByUser returned the deleted id %q", rec.ID)
+		}
 	}
 }

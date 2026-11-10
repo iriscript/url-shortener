@@ -14,6 +14,7 @@ import (
 	"github.com/iriscript/url-shortener/internal/app/logger"
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/database"
+	"github.com/iriscript/url-shortener/internal/deleter"
 	"github.com/iriscript/url-shortener/internal/handler"
 	"github.com/iriscript/url-shortener/internal/repository"
 	"github.com/iriscript/url-shortener/internal/router"
@@ -65,9 +66,22 @@ func run() error {
 		}()
 	}
 
-	h := handler.NewURLHandler(repo, cfg.Handler)
+	del, err := deleter.New(repo, cfg.Deleter)
+	if err != nil {
+		return fmt.Errorf("failed to init deleter: %w", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		if err := del.Stop(stopCtx); err != nil {
+			log.Error().Err(err).Msg("Failed to flush pending deletions")
+		}
+	}()
+
+	h := handler.NewURLHandler(repo, del, cfg.Handler)
 	ping := handler.NewPingHandler(db)
-	rout := router.NewRouter(h, ping)
+	rout := router.NewRouter(h, ping, cfg.Auth)
 	srv := server.New(cfg.Server, rout)
 
 	errCh := make(chan error, 1)
@@ -93,7 +107,12 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRepository(db *database.DB, cfg config.StorageConfig) (handler.URLRepository, error) {
+type repositoryWithDelete interface {
+	handler.URLRepository
+	deleter.Repository
+}
+
+func newRepository(db *database.DB, cfg config.StorageConfig) (repositoryWithDelete, error) {
 	if db != nil {
 		log.Info().Msg("Using database storage")
 

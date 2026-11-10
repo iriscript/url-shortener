@@ -156,9 +156,9 @@ func TestURLHandler_ShortenBatch_SavesInOneCall(t *testing.T) {
 			batches = append(batches, records)
 			return records, nil
 		},
-		saveFunc: func(_ context.Context, id, _ string) (string, error) {
+		saveFunc: func(_ context.Context, rec repository.URLRecord) (string, error) {
 			t.Error("ShortenBatch used Save instead of SaveBatch")
-			return id, nil
+			return rec.ID, nil
 		},
 	}
 

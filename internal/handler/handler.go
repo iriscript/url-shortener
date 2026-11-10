@@ -15,6 +15,7 @@ import (
 
 	"github.com/iriscript/url-shortener/internal/config"
 	"github.com/iriscript/url-shortener/internal/repository"
+	"github.com/iriscript/url-shortener/internal/router/middleware"
 )
 
 const (
@@ -22,23 +23,30 @@ const (
 	idLength   = 8
 
 	maxSaveAttempts = 100
+	maxDeleteIDs    = 1000
 
 	contentTypeJSON = "application/json; charset=utf-8"
 )
 
 type URLRepository interface {
-	Save(ctx context.Context, id, originalURL string) (storedID string, err error)
+	Save(ctx context.Context, record repository.URLRecord) (storedID string, err error)
 	SaveBatch(ctx context.Context, records []repository.URLRecord) (stored []repository.URLRecord, err error)
 	Get(ctx context.Context, id string) (originalURL string, err error)
+	GetByUser(ctx context.Context, userID string) (records []repository.URLRecord, err error)
+}
+
+type Deleter interface {
+	Enqueue(userID string, ids []string)
 }
 
 type URLHandler struct {
 	repo    URLRepository
+	deleter Deleter
 	baseURL string
 }
 
-func NewURLHandler(repo URLRepository, cfg config.HandlerConfig) *URLHandler {
-	return &URLHandler{repo: repo, baseURL: cfg.BaseURL}
+func NewURLHandler(repo URLRepository, deleter Deleter, cfg config.HandlerConfig) *URLHandler {
+	return &URLHandler{repo: repo, deleter: deleter, baseURL: cfg.BaseURL}
 }
 
 func (h *URLHandler) Shorten(c *gin.Context) {
@@ -48,7 +56,9 @@ func (h *URLHandler) Shorten(c *gin.Context) {
 		return
 	}
 
-	shortURL, existed, err := h.shortenURL(c.Request.Context(), string(body))
+	userID, _ := middleware.UserID(c)
+
+	shortURL, existed, err := h.shortenURL(c.Request.Context(), string(body), userID)
 	if err != nil {
 		log.Error().Err(err).Msg("shorten: failed to shorten url")
 		c.String(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
@@ -76,7 +86,9 @@ func (h *URLHandler) ShortenJSON(c *gin.Context) {
 		return
 	}
 
-	shortURL, existed, err := h.shortenURL(c.Request.Context(), request.URL)
+	userID, _ := middleware.UserID(c)
+
+	shortURL, existed, err := h.shortenURL(c.Request.Context(), request.URL, userID)
 	if err != nil {
 		log.Error().Err(err).Msg("shortenJSON: failed to shorten url")
 		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
@@ -111,7 +123,9 @@ func (h *URLHandler) ShortenBatch(c *gin.Context) {
 		}
 	}
 
-	response, err := h.shortenBatch(c.Request.Context(), request)
+	userID, _ := middleware.UserID(c)
+
+	response, err := h.shortenBatch(c.Request.Context(), request, userID)
 	if err != nil {
 		log.Error().Err(err).Msg("shortenBatch: failed to shorten the batch")
 		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
@@ -121,7 +135,7 @@ func (h *URLHandler) ShortenBatch(c *gin.Context) {
 	writeJSON(c, http.StatusCreated, response)
 }
 
-func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequestItem) ([]model.BatchResponseItem, error) {
+func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequestItem, userID string) ([]model.BatchResponseItem, error) {
 	uniqueURLs := make([]string, 0, len(request))
 	positions := make(map[string]int, len(request))
 	for _, item := range request {
@@ -137,7 +151,7 @@ func (h *URLHandler) shortenBatch(ctx context.Context, request []model.BatchRequ
 
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
 		for i, originalURL := range uniqueURLs {
-			records[i] = repository.URLRecord{ID: generateID(), OriginalURL: originalURL}
+			records[i] = repository.URLRecord{ID: generateID(), OriginalURL: originalURL, UserID: userID}
 		}
 
 		stored, err := h.repo.SaveBatch(ctx, records)
@@ -179,6 +193,10 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 	id := c.Param("id")
 
 	originalURL, err := h.repo.Get(c.Request.Context(), id)
+	if errors.Is(err, repository.ErrDeleted) {
+		c.String(http.StatusGone, "short URL deleted")
+		return
+	}
 	if errors.Is(err, repository.ErrNotFound) {
 		c.String(http.StatusBadRequest, "unknown short URL id")
 		return
@@ -193,8 +211,69 @@ func (h *URLHandler) Redirect(c *gin.Context) {
 	c.Status(http.StatusTemporaryRedirect)
 }
 
-func (h *URLHandler) shortenURL(ctx context.Context, originalURL string) (string, bool, error) {
-	id, existed, err := h.save(ctx, originalURL)
+func (h *URLHandler) UserURLs(c *gin.Context) {
+	userID, authenticated := middleware.UserID(c)
+	if !authenticated {
+		log.Warn().Msg("userURLs: request carries no authentic user id")
+		writeJSON(c, http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	records, err := h.repo.GetByUser(c.Request.Context(), userID)
+	if err != nil {
+		log.Error().Err(err).Msg("userURLs: failed to select the user urls")
+		writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+		return
+	}
+	if len(records) == 0 {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	response := make([]model.UserURLItem, len(records))
+	for i, rec := range records {
+		shortURL, err := url.JoinPath(h.baseURL, rec.ID)
+		if err != nil {
+			log.Error().Err(err).Msg("userURLs: failed to build the short URL")
+			writeJSON(c, http.StatusInternalServerError, gin.H{"error": http.StatusText(http.StatusInternalServerError)})
+			return
+		}
+
+		response[i] = model.UserURLItem{ShortURL: shortURL, OriginalURL: rec.OriginalURL}
+	}
+
+	writeJSON(c, http.StatusOK, response)
+}
+
+func (h *URLHandler) DeleteUserURLs(c *gin.Context) {
+	userID, authenticated := middleware.UserID(c)
+	if !authenticated {
+		log.Warn().Msg("deleteUserURLs: request carries no authentic user id")
+		writeJSON(c, http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var ids []string
+	if err := json.NewDecoder(c.Request.Body).Decode(&ids); err != nil {
+		log.Warn().Err(err).Msg("deleteUserURLs: failed to decode request body")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if len(ids) > maxDeleteIDs {
+		log.Warn().Int("count", len(ids)).Msg("deleteUserURLs: too many ids in a single request")
+		writeJSON(c, http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many ids: max %d per request", maxDeleteIDs)})
+		return
+	}
+
+	if len(ids) > 0 {
+		h.deleter.Enqueue(userID, ids)
+	}
+
+	c.Status(http.StatusAccepted)
+}
+
+func (h *URLHandler) shortenURL(ctx context.Context, originalURL, userID string) (string, bool, error) {
+	id, existed, err := h.save(ctx, originalURL, userID)
 	if err != nil {
 		return "", false, err
 	}
@@ -207,11 +286,11 @@ func (h *URLHandler) shortenURL(ctx context.Context, originalURL string) (string
 	return shortURL, existed, nil
 }
 
-func (h *URLHandler) save(ctx context.Context, originalURL string) (string, bool, error) {
+func (h *URLHandler) save(ctx context.Context, originalURL, userID string) (string, bool, error) {
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
-		id := generateID()
+		rec := repository.URLRecord{ID: generateID(), OriginalURL: originalURL, UserID: userID}
 
-		storedID, err := h.repo.Save(ctx, id, originalURL)
+		storedID, err := h.repo.Save(ctx, rec)
 		if err == nil {
 			return storedID, false, nil
 		}

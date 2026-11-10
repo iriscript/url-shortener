@@ -12,9 +12,10 @@ import (
 )
 
 type batchRepository interface {
-	Save(ctx context.Context, id, originalURL string) (string, error)
+	Save(ctx context.Context, rec repository.URLRecord) (string, error)
 	SaveBatch(ctx context.Context, records []repository.URLRecord) ([]repository.URLRecord, error)
 	Get(ctx context.Context, id string) (string, error)
+	GetByUser(ctx context.Context, userID string) ([]repository.URLRecord, error)
 }
 
 func batchBackends(t *testing.T) map[string]batchRepository {
@@ -64,7 +65,7 @@ func TestSaveBatch_RejectsIDAlreadyStoredAndWritesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 
-			if _, err := repo.Save(ctx, "existing", "https://practicum.yandex.ru/"); err != nil {
+			if _, err := repo.Save(ctx, repository.URLRecord{ID: "existing", OriginalURL: "https://practicum.yandex.ru/"}); err != nil {
 				t.Fatalf("Save failed: %v", err)
 			}
 
@@ -162,7 +163,7 @@ func TestSave_ReturnsExistingIDForKnownURL(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 
-			firstID, err := repo.Save(ctx, "firstId1", originalURL)
+			firstID, err := repo.Save(ctx, repository.URLRecord{ID: "firstId1", OriginalURL: originalURL})
 			if err != nil {
 				t.Fatalf("Save failed: %v", err)
 			}
@@ -170,7 +171,7 @@ func TestSave_ReturnsExistingIDForKnownURL(t *testing.T) {
 				t.Fatalf("Save returned id %q, want %q", firstID, "firstId1")
 			}
 
-			secondID, err := repo.Save(ctx, "secondId", originalURL)
+			secondID, err := repo.Save(ctx, repository.URLRecord{ID: "secondId", OriginalURL: originalURL})
 			if !errors.Is(err, repository.ErrURLConflict) {
 				t.Fatalf("Save error = %v, want %v", err, repository.ErrURLConflict)
 			}
@@ -178,8 +179,60 @@ func TestSave_ReturnsExistingIDForKnownURL(t *testing.T) {
 				t.Errorf("Save returned id %q, want the already stored %q", secondID, firstID)
 			}
 
-			if got, _ := repo.Get(ctx, "secondId"); got != "" {
+			if _, err := repo.Get(ctx, "secondId"); !errors.Is(err, repository.ErrNotFound) {
 				t.Error("the rejected id was stored anyway")
+			}
+		})
+	}
+}
+
+func TestGetByUser_ReturnsOnlyTheRecordsOfThatUser(t *testing.T) {
+	for name, repo := range batchBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+
+			if _, err := repo.Save(ctx, repository.URLRecord{ID: "aliceId1", OriginalURL: "https://practicum.yandex.ru/", UserID: "alice"}); err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+			if _, err := repo.Save(ctx, repository.URLRecord{ID: "bobId001", OriginalURL: "https://ya.ru/", UserID: "bob"}); err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+			if _, err := repo.SaveBatch(ctx, []repository.URLRecord{
+				{ID: "aliceId2", OriginalURL: "https://go.dev/", UserID: "alice"},
+			}); err != nil {
+				t.Fatalf("SaveBatch failed: %v", err)
+			}
+
+			records, err := repo.GetByUser(ctx, "alice")
+			if err != nil {
+				t.Fatalf("GetByUser failed: %v", err)
+			}
+
+			want := []repository.URLRecord{
+				{ID: "aliceId1", OriginalURL: "https://practicum.yandex.ru/", UserID: "alice"},
+				{ID: "aliceId2", OriginalURL: "https://go.dev/", UserID: "alice"},
+			}
+			if len(records) != len(want) {
+				t.Fatalf("GetByUser returned %d records, want %d: %+v", len(records), len(want), records)
+			}
+			for i := range want {
+				if records[i] != want[i] {
+					t.Errorf("record %d = %+v, want %+v", i, records[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestGetByUser_ReturnsNothingForAnUnknownUser(t *testing.T) {
+	for name, repo := range batchBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			records, err := repo.GetByUser(t.Context(), "nobody")
+			if err != nil {
+				t.Fatalf("GetByUser failed: %v", err)
+			}
+			if len(records) != 0 {
+				t.Errorf("GetByUser = %+v, want no records", records)
 			}
 		})
 	}
@@ -192,7 +245,7 @@ func TestSaveBatch_ReusesExistingIDForKnownURL(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 
-			knownID, err := repo.Save(ctx, "knownId1", knownURL)
+			knownID, err := repo.Save(ctx, repository.URLRecord{ID: "knownId1", OriginalURL: knownURL})
 			if err != nil {
 				t.Fatalf("Save failed: %v", err)
 			}
@@ -215,7 +268,7 @@ func TestSaveBatch_ReusesExistingIDForKnownURL(t *testing.T) {
 				t.Errorf("known URL got id %q, want the already stored %q", stored[1].ID, knownID)
 			}
 
-			if got, _ := repo.Get(ctx, "newId002"); got != "" {
+			if _, err := repo.Get(ctx, "newId002"); !errors.Is(err, repository.ErrNotFound) {
 				t.Error("a second id was stored for an already known URL")
 			}
 		})
